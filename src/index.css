@@ -1,0 +1,5 @@
+@import "tailwindcss";
+
+@utility mask-fade-edges {
+  mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
+}

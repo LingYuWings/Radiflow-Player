@@ -1,0 +1,5 @@
+{
+  "name": "RadiFlow Player",
+  "description": "RadiFlow Player is a high-fidelity music player with dynamic backgrounds, word-by-word lyrics, playlists, and local library support.",
+  "requestFramePermissions": []
+}
