@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Copy, Minus, Music, Pause, Play, SkipBack, SkipForward, Square, Volume2, VolumeX, X } from 'lucide-react';
 import { LyricLine } from '../utils/lyricsParser';
 import { cn } from '../lib/utils';
+import { AppLogo } from './AppLogo';
 
 export interface DetachedMiniPlayerState {
   title: string;
@@ -104,12 +105,7 @@ export const DetachedMiniPlayerWindow: React.FC<DetachedMiniPlayerWindowProps> =
           )}
         >
           <div className="flex min-w-0 items-center gap-3">
-            <div className={cn(
-              'flex h-7.5 w-7.5 items-center justify-center rounded-2xl border shrink-0',
-              state.tone === 'light' ? 'border-black/8 bg-black/6 text-black/70' : 'border-white/10 bg-white/8 text-white/70'
-            )}>
-              <Music size={14} />
-            </div>
+            <AppLogo className="h-7.5 w-7.5 rounded-2xl shrink-0" />
             <div className="min-w-0">
               <p className="truncate text-[13px] font-semibold">RadiFlow Player</p>
               <p className={cn('truncate text-[9px] uppercase tracking-[0.22em]', mutedTextClassName)}>Mini Player</p>

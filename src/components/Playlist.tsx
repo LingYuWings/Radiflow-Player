@@ -77,7 +77,7 @@ export const Playlist: React.FC<PlaylistProps> = ({
               key={index}
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: index * 0.05 }}
+              transition={{ delay: Math.min(index * 0.05, 0.35) }}
               className={cn(
                 "group flex items-center gap-4 p-4 rounded-xl transition-all cursor-pointer",
                 isCurrentPlayback && index === currentIndex 

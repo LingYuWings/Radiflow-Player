@@ -1,36 +1,33 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Disc, ListMusic, Maximize2, Minimize2, Music, Pencil, Plus, Search, Settings2, Trash2, User } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import * as mm from 'music-metadata-browser';
 import { Background } from './components/Background';
 import { Library, LibrarySection, PlaylistCollection } from './components/Library';
+import { useLibrary } from './hooks/useLibrary';
+import { useLyrics } from './hooks/useLyrics';
 import { LyricsView } from './components/LyricsView';
 import { MiniPlayer } from './components/MiniPlayer';
 import { PlayerControls, LoopMode } from './components/PlayerControls';
 import { Playlist } from './components/Playlist';
 import { SettingsView } from './components/SettingsView';
+import { AppLogo } from './components/AppLogo';
 import { WindowChrome } from './components/WindowChrome';
 import { getSettingsCopy, AppLanguage } from './lib/copy';
 import { cn } from './lib/utils';
-import { LyricLine, mergeLyrics, parseLRC, parseYRC } from './utils/lyricsParser';
+import {
+  AppSection,
+  createSongIdentity,
+  EMPTY_SONG,
+  getPersistedSongKey,
+  PlaylistModalState,
+  rebuildPlaylistCollections,
+  Song,
+  StoredPlaybackSession,
+  StoredPlaylist,
+  StoredPreferences,
+} from './types/player';
 
 const ipc = (window as any).require ? (window as any).require('electron').ipcRenderer : null;
-
-interface Song {
-  title: string;
-  artist: string;
-  album?: string;
-  cover?: string;
-  lrc: string;
-  file?: File | string;
-}
-
-const EMPTY_SONG: Song = {
-  title: 'No Song Selected',
-  artist: 'Upload an audio file to start',
-  cover: undefined,
-  lrc: '',
-};
 
 const APP_NAME = 'RadiFlow Player';
 const APP_VERSION = '0.0.0';
@@ -40,81 +37,13 @@ const PREFERENCES_STORAGE_VERSION = 1;
 const PLAYBACK_SESSION_STORAGE_KEY = 'apple-music-style-player.playback-session';
 const PLAYBACK_SESSION_STORAGE_VERSION = 1;
 
-type AppSection = LibrarySection | 'settings';
-
-interface StoredPlaylist {
-  id: string;
-  name: string;
-  songKeys: string[];
-  updatedAt: number;
-}
-
-interface StoredPreferences {
-  version: number;
-  language: AppLanguage;
-  effect: 'blur' | 'streamer';
-  volume: number;
-  loopMode: LoopMode;
-  isShuffle: boolean;
-}
-
-interface StoredPlaybackSession {
-  version: number;
-  queueSongKeys: string[];
-  currentSongKey: string;
-  currentTime: number;
-  isPlaying: boolean;
-  currentPlaybackPlaylistId: string | null;
-  view: 'player' | 'library';
-  showLyrics: boolean;
-  showPlaylist: boolean;
-}
-
-type PlaylistModalState =
-  | { type: 'create-playlist'; pendingSongKeys: string[]; openPlaylistsAfterCreate: boolean }
-  | { type: 'rename-playlist'; playlistId: string }
-  | { type: 'delete-playlist'; playlistId: string; playlistName: string }
-  | { type: 'pick-playlist'; pendingSongKeys: string[] }
-  | null;
-
-const createSongIdentity = (song: Song) => {
-  const fileIdentity = typeof song.file === 'string'
-    ? song.file
-    : song.file
-      ? `${song.file.name}-${song.file.size}`
-      : '';
-
-  return `${song.title}::${song.artist}::${song.album || ''}::${fileIdentity}`;
-};
-
-const getPersistedSongKey = (song: Song) => {
-  if (typeof song.file !== 'string') {
-    return null;
-  }
-
-  return createSongIdentity(song);
-};
-
-const rebuildPlaylistCollections = (playlists: StoredPlaylist[], songs: Song[]): PlaylistCollection[] => {
-  const songMap = new Map(songs.map((track) => [createSongIdentity(track), track]));
-
-  return playlists.map((playlist) => ({
-    id: playlist.id,
-    name: playlist.name,
-    updatedAt: playlist.updatedAt,
-    songs: playlist.songKeys.map((songKey) => songMap.get(songKey)).filter((track): track is Song => Boolean(track)),
-  }));
-};
-
 export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [effect, setEffect] = useState<'blur' | 'streamer'>('streamer');
-  const [lyrics, setLyrics] = useState<LyricLine[]>([]);
   const [song, setSong] = useState<Song>(EMPTY_SONG);
   const [playbackQueue, setPlaybackQueue] = useState<Song[]>([]);
-  const [librarySongs, setLibrarySongs] = useState<Song[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [loopMode, setLoopMode] = useState<LoopMode>('none');
   const [isShuffle, setIsShuffle] = useState(false);
@@ -133,21 +62,37 @@ export default function App() {
   const [playlistNameDraft, setPlaylistNameDraft] = useState('');
   const [hasLoadedPlaylists, setHasLoadedPlaylists] = useState(false);
   const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
-  const [hasLoadedLibrary, setHasLoadedLibrary] = useState(false);
   const [hasLoadedPlaybackSession, setHasLoadedPlaybackSession] = useState(false);
   const [hasRestoredPlaybackSession, setHasRestoredPlaybackSession] = useState(false);
   const [pendingPlaybackSession, setPendingPlaybackSession] = useState<StoredPlaybackSession | null>(null);
   const [currentPlaybackPlaylistId, setCurrentPlaybackPlaylistId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [volume, setVolume] = useState(0.8);
-  const [isLoadingLyrics, setIsLoadingLyrics] = useState(false);
-  const [musicFolder, setMusicFolder] = useState<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const hasActiveSong = currentIndex >= 0 && playbackQueue.length > 0 && song.title !== EMPTY_SONG.title;
+
+  const {
+    librarySongs,
+    isLoadingLibrary,
+    hasLoadedLibrary,
+    musicFolder,
+    refreshLibrary,
+    selectFolder,
+    openFolder,
+  } = useLibrary(ipc);
+  const { lyrics, isLoadingLyrics } = useLyrics({
+    enabled: hasActiveSong,
+    title: song.title,
+    artist: song.artist,
+  });
+
+  const handleManualLibraryRefresh = () => {
+    void refreshLibrary({ forceRefresh: true });
+  };
 
   const settingsCopy = useMemo(() => getSettingsCopy(language), [language]);
   const uiText = useMemo(() => {
@@ -246,8 +191,6 @@ export default function App() {
     () => rebuildPlaylistCollections(playlistDefinitions, librarySongs),
     [playlistDefinitions, librarySongs]
   );
-
-  const hasActiveSong = currentIndex >= 0 && playbackQueue.length > 0 && song.title !== EMPTY_SONG.title;
 
   const selectedPlaylist = useMemo(
     () => savedPlaylists.find((playlist) => playlist.id === selectedPlaylistId) ?? savedPlaylists[0] ?? null,
@@ -427,62 +370,6 @@ export default function App() {
       audio.removeEventListener('ended', handleEnded);
     };
   }, [loopMode, playbackQueue, currentIndex, isShuffle]);
-
-  const fetchLibrary = async () => {
-    setIsLoadingLibrary(true);
-    try {
-      const response = await fetch('/api/music');
-      const files: string[] = await response.json();
-
-      const songs: Song[] = await Promise.all(files.map(async (filename) => {
-        const url = `/music/${filename}`;
-        try {
-          const fileResponse = await fetch(url);
-          const blob = await fileResponse.blob();
-          const metadata = await mm.parseBlob(blob);
-          const common = metadata.common as any;
-
-          let coverUrl: string | undefined;
-          if (common.picture && common.picture.length > 0) {
-            const picture = common.picture[0];
-            const coverBlob = new Blob([picture.data], { type: picture.format });
-            coverUrl = URL.createObjectURL(coverBlob);
-          }
-
-          return {
-            title: common.title || filename.replace(/\.[^/.]+$/, ''),
-            artist: common.artist || 'Unknown Artist',
-            album: common.album,
-            cover: coverUrl,
-            lrc: '',
-            file: url,
-          };
-        } catch {
-          return {
-            title: filename.replace(/\.[^/.]+$/, ''),
-            artist: 'Unknown Artist',
-            lrc: '',
-            file: url,
-          };
-        }
-      }));
-
-      setLibrarySongs(songs);
-    } catch (error) {
-      console.error('Failed to fetch library:', error);
-    } finally {
-      setIsLoadingLibrary(false);
-      setHasLoadedLibrary(true);
-    }
-  };
-
-  useEffect(() => {
-    fetchLibrary();
-
-    if (ipc) {
-      ipc.invoke('get-music-folder').then((path: string) => setMusicFolder(path));
-    }
-  }, []);
 
   useEffect(() => {
     if (!ipc) return;
@@ -760,87 +647,11 @@ export default function App() {
     return () => ipc.removeListener('player-control', handleControl);
   }, [isPlaying, currentIndex, playbackQueue, isShuffle, loopMode]);
 
-  const handleSelectFolder = async () => {
-    if (!ipc) return;
-
-    const path = await ipc.invoke('select-music-folder');
-    if (path) {
-      setMusicFolder(path);
-      await fetch('/api/settings/music-dir', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path }),
-      });
-      fetchLibrary();
-    }
-  };
-
-  const handleOpenFolder = () => {
-    if (ipc) {
-      ipc.invoke('open-music-folder', musicFolder);
-    }
-  };
-
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = volume;
     }
   }, [volume]);
-
-  useEffect(() => {
-    const fetchLyrics = async () => {
-      if (!hasActiveSong) return;
-
-      setIsLoadingLyrics(true);
-      try {
-        const searchResponse = await fetch(`/api/proxy/search?word=${encodeURIComponent(`${song.title} ${song.artist}`)}`);
-        const searchData = await searchResponse.json();
-        const results = Array.isArray(searchData.data) ? searchData.data : searchData.data?.list;
-
-        if (searchData.code !== 200 || !results?.length) {
-          throw new Error('Song not found in search results');
-        }
-
-        const firstSong = results[0];
-        const songId = firstSong.id || firstSong.songid || firstSong.songmid;
-        if (!songId) {
-          throw new Error('Could not find song ID');
-        }
-
-        const lyricResponse = await fetch(`/api/proxy/lyric?id=${songId}`);
-        const lyricData = await lyricResponse.json();
-        const lyricText = lyricData.data?.lrc || lyricData.data?.lyric;
-        const translatedLyricText = lyricData.data?.tlyric || lyricData.data?.trans;
-        const yrcText = lyricData.data?.yrc;
-
-        if (lyricData.code !== 200 || (!lyricText && !yrcText)) {
-          throw new Error('Lyrics not found in API response');
-        }
-
-        let parsedLyrics: LyricLine[] = [];
-        if (yrcText) {
-          parsedLyrics = parseYRC(yrcText);
-          if (translatedLyricText) {
-            parsedLyrics = mergeLyrics(parsedLyrics, parseLRC(translatedLyricText));
-          }
-        } else if (lyricText) {
-          const combined = translatedLyricText ? `${lyricText}\n${translatedLyricText}` : lyricText;
-          parsedLyrics = parseLRC(combined);
-        }
-
-        setSong((previous) => ({ ...previous, lrc: yrcText || lyricText }));
-        setLyrics(parsedLyrics);
-      } catch (error) {
-        console.error('Failed to fetch lyrics:', error);
-        setSong((previous) => ({ ...previous, lrc: '[00:00.00]暂无歌词' }));
-        setLyrics(parseLRC('[00:00.00]暂无歌词'));
-      } finally {
-        setIsLoadingLyrics(false);
-      }
-    };
-
-    fetchLyrics();
-  }, [hasActiveSong, song.artist, song.title]);
 
   const playSongs = async (songsToPlay: Song[], index: number, sourcePlaylistId: string | null = null) => {
     if (index < 0 || index >= songsToPlay.length) return;
@@ -1292,9 +1103,14 @@ export default function App() {
             <div className="h-full flex gap-4 min-w-0">
               <aside className="min-h-0 w-[clamp(14rem,24vw,18rem)] rounded-4xl border border-white/10 bg-black/25 backdrop-blur-3xl shadow-2xl flex flex-col overflow-hidden shrink-0">
                 <div className="px-5 pt-5 pb-4 border-b border-white/10">
-                  <p className="text-xs font-mono uppercase tracking-[0.24em] text-white/35">{APP_NAME}</p>
-                  <h1 className="mt-2 text-2xl font-black tracking-tight text-white">{uiText.brandTitle}</h1>
-                  <p className="mt-1 text-sm text-white/40">{uiText.brandSubtitle}</p>
+                  <div className="flex items-center gap-3">
+                    <AppLogo className="h-12 w-12 rounded-[18px]" />
+                    <div className="min-w-0">
+                      <p className="text-xs font-mono uppercase tracking-[0.24em] text-white/35">{APP_NAME}</p>
+                      <h1 className="mt-1 text-2xl font-black tracking-tight text-white">{uiText.brandTitle}</h1>
+                      <p className="mt-1 text-sm text-white/40">{uiText.brandSubtitle}</p>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="p-4 border-b border-white/10 space-y-2">
@@ -1605,9 +1421,9 @@ export default function App() {
                 onLanguageChange={setLanguage}
                 currentFolder={musicFolder}
                 isElectron={!!ipc}
-                onSelectFolder={handleSelectFolder}
-                onOpenFolder={handleOpenFolder}
-                onRefreshLibrary={fetchLibrary}
+                onSelectFolder={selectFolder}
+                onOpenFolder={openFolder}
+                onRefreshLibrary={handleManualLibraryRefresh}
                 isRefreshingLibrary={isLoadingLibrary}
                 effect={effect}
                 onEffectChange={setEffect}

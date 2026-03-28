@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, nativeImage } from 'electron';
 import path from 'path';
 import isDev from 'electron-is-dev';
 import { fileURLToPath } from 'url';
@@ -7,19 +7,54 @@ import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const APP_NAME = 'RadiFlow Player';
+const MIN_WINDOW_WIDTH = 1200;
+const MIN_WINDOW_HEIGHT = 880;
 
 let mainWindow;
 let tray;
 let musicPath = path.join(process.cwd(), 'music');
+const startUrl = process.env.ELECTRON_START_URL;
+const shouldOpenDevTools = isDev && process.env.ELECTRON_DISABLE_DEVTOOLS !== 'true' && !startUrl;
+const customUserDataPath = process.env.ELECTRON_USER_DATA_DIR;
+
+const resolveAppIcon = () => {
+  const iconCandidates = [
+    path.join(__dirname, 'logo.ico'),
+    path.join(__dirname, 'logo.png'),
+  ];
+
+  for (const iconPath of iconCandidates) {
+    if (!fs.existsSync(iconPath)) {
+      continue;
+    }
+
+    const image = nativeImage.createFromPath(iconPath);
+    if (!image.isEmpty()) {
+      return image;
+    }
+  }
+
+  return undefined;
+};
+
+const appIcon = resolveAppIcon();
+
+if (customUserDataPath) {
+  fs.mkdirSync(customUserDataPath, { recursive: true });
+  app.setPath('userData', customUserDataPath);
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     title: APP_NAME,
     backgroundColor: '#050505',
     frame: false,
     autoHideMenuBar: true,
+    icon: appIcon,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -27,11 +62,16 @@ function createWindow() {
     },
   });
 
-  if (isDev) {
+  if (startUrl) {
+    mainWindow.loadURL(startUrl);
+  } else if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
-    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist/index.html'));
+  }
+
+  if (shouldOpenDevTools) {
+    mainWindow.webContents.openDevTools();
   }
 
   mainWindow.on('closed', () => {
@@ -48,9 +88,11 @@ function createWindow() {
 }
 
 function createTray() {
-  // Use a generic icon or a placeholder if you don't have one
-  // For now, we'll just use a simple template
-  tray = new Tray(path.join(__dirname, 'public/favicon.ico')); // Fallback to favicon
+  if (!appIcon) {
+    return;
+  }
+
+  tray = new Tray(appIcon);
   const contextMenu = Menu.buildFromTemplate([
     { label: '播放/暂停', click: () => mainWindow?.webContents.send('player-control', 'toggle-play') },
     { label: '下一曲', click: () => mainWindow?.webContents.send('player-control', 'next') },
@@ -76,8 +118,9 @@ function registerGlobalShortcuts() {
 
 app.whenReady().then(() => {
   app.setName(APP_NAME);
+  app.setAppUserModelId('com.radiflow.player');
   createWindow();
-  // createTray(); // Disabled by default as we might not have the icon file yet
+  createTray();
   registerGlobalShortcuts();
 
   app.on('activate', () => {
