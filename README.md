@@ -185,28 +185,3 @@ README is intended as the project front page. DOCUMENT.md is intended as the det
 ## Chinese Version
 
 If you prefer Chinese documentation, open [readme-zh.md](./readme-zh.md).
-
-这套缓存逻辑的目标是让较大的本地曲库在多次打开应用或反复进入媒体库时保持更快响应。
-
-## 目录结构
-
-```text
-.
-├─ main.js
-├─ server.ts
-├─ package.json
-├─ README.md
-├─ readme-zh.md
-├─ DOCUMENT.md
-├─ music/
-├─ scripts/
-└─ src/
-	├─ App.tsx
-	├─ main.tsx
-	├─ index.css
-	├─ components/
-	├─ hooks/
-	├─ lib/
-	├─ types/
-	└─ utils/
-```
