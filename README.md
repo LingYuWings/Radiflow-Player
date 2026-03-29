@@ -210,30 +210,3 @@ If you prefer Chinese documentation, open [readme-zh.md](./readme-zh.md).
 	├─ types/
 	└─ utils/
 ```
-
-## 建议的阅读顺序
-
-如果你第一次接手这个项目，建议按下面顺序阅读：
-
-1. src/App.tsx
-2. src/components/Library.tsx
-3. src/components/PlayerControls.tsx
-4. src/components/Background.tsx
-5. src/hooks/useLibrary.ts
-6. server.ts
-7. main.js
-
-这样可以先理解界面主状态，再回到本地服务层和桌面壳层。
-
-## 开发注意事项
-
-- 项目当前以桌面端体验优先，不以移动端适配为主要目标
-- 部分交互依赖 Electron 环境，尤其是文件夹选择与窗口控制
-- 歌词依赖代理远程接口，调试时要考虑网络失败场景
-- 动画质量和大媒体库性能是当前持续优化重点
-
-## 更多文档
-
-如果你需要更完整的维护说明、模块边界和开发手册，请继续阅读 DOCUMENT.md。
-
-README 用于快速了解项目，DOCUMENT.md 用于深入维护项目。
