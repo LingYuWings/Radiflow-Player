@@ -34,3 +34,18 @@ body {
 @utility mask-fade-edges {
   mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
 }
+
+[data-custom-background='true'] .customizable-backdrop-soft {
+  backdrop-filter: blur(var(--rf-custom-blur-soft)) !important;
+  -webkit-backdrop-filter: blur(var(--rf-custom-blur-soft)) !important;
+}
+
+[data-custom-background='true'] .customizable-backdrop-medium {
+  backdrop-filter: blur(var(--rf-custom-blur-medium)) !important;
+  -webkit-backdrop-filter: blur(var(--rf-custom-blur-medium)) !important;
+}
+
+[data-custom-background='true'] .customizable-backdrop-strong {
+  backdrop-filter: blur(var(--rf-custom-blur-strong)) !important;
+  -webkit-backdrop-filter: blur(var(--rf-custom-blur-strong)) !important;
+}

@@ -92,6 +92,16 @@ export interface SettingsCopy {
 	openFolder: string;
 	refreshDescription: string;
 	appearance: string;
+	 backgroundSource: string;
+	 useBuiltInBackground: string;
+	 useCustomBackground: string;
+	 customBackgroundDescription: string;
+	 uploadCustomBackground: string;
+	 replaceCustomBackground: string;
+	 removeCustomBackground: string;
+	 customBackgroundNotSelected: string;
+	 customBackgroundReady: string;
+	 customBackgroundBlur: string;
 	backgroundEffect: string;
 	blurMode: string;
 	streamerMode: string;
@@ -200,6 +210,16 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			openFolder: '打开文件夹',
 			refreshDescription: '修改目录后请刷新媒体库，重新读取歌曲与封面信息。',
 			appearance: '外观',
+			backgroundSource: '背景来源',
+			useBuiltInBackground: '项目内置背景',
+			useCustomBackground: '自定义背景',
+			customBackgroundDescription: '上传一张背景图片，并自定义其模糊程度。启用后将覆盖当前歌曲封面和内置背景效果。',
+			uploadCustomBackground: '上传背景图片',
+			replaceCustomBackground: '替换背景图片',
+			removeCustomBackground: '移除自定义背景',
+			customBackgroundNotSelected: '当前未选择自定义背景图片。',
+			customBackgroundReady: '已选择自定义背景图片',
+			customBackgroundBlur: '背景模糊程度',
 			backgroundEffect: '背景效果',
 			blurMode: '模糊',
 			streamerMode: '光流',
@@ -299,6 +319,16 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			openFolder: 'Open Folder',
 			refreshDescription: 'Refresh after changing folders to reload tracks and cover artwork.',
 			appearance: 'Appearance',
+			backgroundSource: 'Background Source',
+			useBuiltInBackground: 'Built-in Background',
+			useCustomBackground: 'Custom Background',
+			customBackgroundDescription: 'Upload a background image and control its blur amount. When enabled, it overrides the current song-based background rendering.',
+			uploadCustomBackground: 'Upload Background',
+			replaceCustomBackground: 'Replace Background',
+			removeCustomBackground: 'Remove Custom Background',
+			customBackgroundNotSelected: 'No custom background image selected yet.',
+			customBackgroundReady: 'Custom background image selected',
+			customBackgroundBlur: 'Background Blur Amount',
 			backgroundEffect: 'Background Effect',
 			blurMode: 'Blur',
 			streamerMode: 'Streamer',

@@ -39,7 +39,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
       className="fixed left-1/2 bottom-4 z-100 w-[calc(100vw-2rem)] max-w-[24rem] -translate-x-1/2 lg:max-w-104"
     >
       <div 
-        className="bg-black/40 backdrop-blur-2xl border border-white/10 rounded-2xl p-3 flex items-center gap-4 shadow-2xl cursor-pointer group hover:bg-black/50 transition-all"
+        className="bg-black/40 backdrop-blur-2xl customizable-backdrop-medium border border-white/10 rounded-2xl p-3 flex items-center gap-4 shadow-2xl cursor-pointer group hover:bg-black/50 transition-all"
         onClick={onClick}
       >
         <div className="w-12 h-12 rounded-lg overflow-hidden bg-white/5 shrink-0 shadow-lg">

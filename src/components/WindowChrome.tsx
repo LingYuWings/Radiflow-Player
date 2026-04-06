@@ -27,7 +27,7 @@ export const WindowChrome: React.FC<WindowChromeProps> = ({
   onClose,
 }) => {
   return (
-    <div className="absolute inset-x-0 top-0 z-90 h-14 border-b border-white/10 bg-black/35 backdrop-blur-2xl">
+    <div className="absolute inset-x-0 top-0 z-90 h-14 border-b border-white/10 bg-black/35 backdrop-blur-2xl customizable-backdrop-medium">
       <div className="flex h-full items-center justify-between gap-4 px-4 md:px-5" style={dragRegionStyle}>
         <div className="flex min-w-0 items-center gap-3">
           <AppLogo className="h-9 w-9 rounded-2xl shadow-lg" />

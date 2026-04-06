@@ -459,7 +459,7 @@ const SongListItem = memo(SongListItemComponent, (prev, next) => (
 ));
 
 const EmptyState: React.FC<{ icon: React.ReactNode; title: string; subtitle?: string }> = ({ icon, title, subtitle }) => (
-  <div className="min-h-80 rounded-4xl border border-white/10 bg-black/15 backdrop-blur-2xl flex flex-col items-center justify-center gap-4 text-center text-white/35 px-6">
+  <div className="min-h-80 rounded-4xl border border-white/10 bg-black/15 backdrop-blur-2xl customizable-backdrop-medium flex flex-col items-center justify-center gap-4 text-center text-white/35 px-6">
     <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center">{icon}</div>
     <div>
       <p className="text-xl font-bold text-white/70">{title}</p>
@@ -1072,7 +1072,7 @@ export const Library: React.FC<LibraryProps> = ({
         value={searchQuery}
         onChange={(event) => setSearchQuery(event.target.value)}
         className={cn(
-          'w-full bg-white/5 border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:bg-white/10 focus:border-white/20 transition-all backdrop-blur-md',
+          'w-full bg-white/5 border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:bg-white/10 focus:border-white/20 transition-all backdrop-blur-md customizable-backdrop-soft',
           headerCollapseProgress > 0.35 ? 'rounded-[1.1rem] py-3 pl-12 pr-5' : 'rounded-2xl py-4 pl-12 pr-6'
         )}
       />
@@ -1104,7 +1104,7 @@ export const Library: React.FC<LibraryProps> = ({
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: Math.min(index * 0.03, 0.35) }}
                   onClick={() => onOpenPlaylist(playlist.id)}
-                  className="group relative w-full overflow-hidden rounded-4xl border border-white/10 bg-black/15 px-5 py-5 text-left backdrop-blur-2xl transition-all hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/6 hover:shadow-2xl"
+                  className="group relative w-full overflow-hidden rounded-4xl border border-white/10 bg-black/15 px-5 py-5 text-left backdrop-blur-2xl customizable-backdrop-medium transition-all hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/6 hover:shadow-2xl"
                 >
                   <div className="absolute inset-0 bg-linear-to-r from-white/4 via-transparent to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
                   <div className="relative flex items-center gap-5">
@@ -1167,7 +1167,7 @@ export const Library: React.FC<LibraryProps> = ({
           </div>
         </div>
 
-        <div className="group mb-8 rounded-4xl border border-white/10 bg-black/15 p-5 md:p-6 backdrop-blur-2xl transition-all hover:border-white/15 hover:bg-white/4 hover:shadow-2xl">
+        <div className="group mb-8 rounded-4xl border border-white/10 bg-black/15 p-5 md:p-6 backdrop-blur-2xl customizable-backdrop-medium transition-all hover:border-white/15 hover:bg-white/4 hover:shadow-2xl">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5 md:gap-6">
             <PlaylistArtwork
               cover={playlistCover}
@@ -1344,7 +1344,7 @@ export const Library: React.FC<LibraryProps> = ({
               />
             </div>
           )}
-          <div className="absolute inset-0 bg-black/28 backdrop-blur-xl" />
+          <div className="absolute inset-0 bg-black/28 backdrop-blur-xl customizable-backdrop-medium" />
           <button
             type="button"
             aria-label="Close album overlay"
@@ -1378,7 +1378,7 @@ export const Library: React.FC<LibraryProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.22, ease: OVERLAY_EASE } }}
             transition={OVERLAY_PANEL_TRANSITION}
-            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/32 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl md:p-8"
+            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/32 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl customizable-backdrop-strong md:p-8"
           >
             <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[2.1rem]">
               {overlayBackground && (
@@ -1487,7 +1487,7 @@ export const Library: React.FC<LibraryProps> = ({
               />
             </div>
           )}
-          <div className="absolute inset-0 bg-black/28 backdrop-blur-xl" />
+          <div className="absolute inset-0 bg-black/28 backdrop-blur-xl customizable-backdrop-medium" />
           <button
             type="button"
             aria-label="Close artist overlay"
@@ -1521,7 +1521,7 @@ export const Library: React.FC<LibraryProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.22, ease: OVERLAY_EASE } }}
             transition={OVERLAY_PANEL_TRANSITION}
-            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/32 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl md:p-8"
+            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/32 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl customizable-backdrop-strong md:p-8"
           >
             <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[2.1rem]">
               {overlayBackground && (
@@ -1661,7 +1661,7 @@ export const Library: React.FC<LibraryProps> = ({
           >
             <div className="min-h-full">
               {shouldShowLoadingState ? (
-                <div className="min-h-80 rounded-4xl border border-white/10 bg-black/15 backdrop-blur-2xl flex flex-col items-center justify-center gap-4 text-white/35">
+                <div className="min-h-80 rounded-4xl border border-white/10 bg-black/15 backdrop-blur-2xl customizable-backdrop-medium flex flex-col items-center justify-center gap-4 text-white/35">
                   <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin" />
                   <p className="font-mono text-xs tracking-widest uppercase">Loading Library...</p>
                 </div>

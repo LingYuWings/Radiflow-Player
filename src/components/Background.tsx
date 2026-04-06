@@ -6,6 +6,10 @@ import { motion, AnimatePresence } from 'motion/react';
 interface BackgroundProps {
   imageSrc?: string;
   effect: 'blur' | 'streamer';
+  customBackground?: {
+    imageSrc: string;
+    blur: number;
+  } | null;
 }
 
 interface StreamerPaletteState {
@@ -82,14 +86,15 @@ const BLOB_CONFIGS = [
   { duration:  70, xKeys: [0,  -80, -160,  -50, 0], yKeys: [0,  200,  130,   280, 0], left: '25%', top: '88%' },
 ];
 
-export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect }) => {
+export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, customBackground = null }) => {
   const [streamerLayers, setStreamerLayers] = useState<StreamerPaletteState[]>([
     { key: 'default', colors: DEFAULT_STREAMER_COLORS },
   ]);
   const paletteRequestIdRef = useRef(0);
+  const isUsingCustomBackground = Boolean(customBackground?.imageSrc);
 
   useEffect(() => {
-    if (!imageSrc) {
+    if (isUsingCustomBackground || !imageSrc) {
       setStreamerLayers([{ key: 'default', colors: DEFAULT_STREAMER_COLORS }]);
       return;
     }
@@ -131,7 +136,7 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect }) => {
     return () => {
       isDisposed = true;
     };
-  }, [imageSrc]);
+  }, [imageSrc, isUsingCustomBackground]);
 
   useEffect(() => {
     if (streamerLayers.length < 2) {
@@ -146,10 +151,29 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect }) => {
   }, [streamerLayers]);
 
   const blurBackgroundKey = `blur:${imageSrc || 'empty'}`;
+  const customBackgroundKey = `custom:${customBackground?.imageSrc || 'empty'}`;
 
   return (
     <div className="fixed inset-0 -z-10 overflow-hidden bg-black">
-      {effect === 'blur' ? (
+      {isUsingCustomBackground ? (
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={customBackgroundKey}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.8 }}
+            className="absolute inset-0"
+          >
+            <div
+              className="absolute inset-[-4%] bg-cover bg-center opacity-88 transition-all duration-700"
+              style={{
+                backgroundImage: `url(${customBackground?.imageSrc})`,
+              }}
+            />
+          </motion.div>
+        </AnimatePresence>
+      ) : effect === 'blur' ? (
         <AnimatePresence mode="wait">
           <motion.div
             key={blurBackgroundKey}

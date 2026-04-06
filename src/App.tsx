@@ -33,15 +33,56 @@ const APP_NAME = 'RadiFlow Player';
 const APP_VERSION = '0.0.0';
 const PLAYLIST_STORAGE_KEY = 'apple-music-style-player.playlists';
 const PREFERENCES_STORAGE_KEY = 'apple-music-style-player.preferences';
-const PREFERENCES_STORAGE_VERSION = 1;
+const PREFERENCES_STORAGE_VERSION = 2;
 const PLAYBACK_SESSION_STORAGE_KEY = 'apple-music-style-player.playback-session';
 const PLAYBACK_SESSION_STORAGE_VERSION = 1;
+const DEFAULT_CUSTOM_BACKGROUND_BLUR = 72;
+const MAX_CUSTOM_BACKGROUND_DIMENSION = 1920;
+const CUSTOM_BACKGROUND_OUTPUT_QUALITY = 0.84;
+
+const compressBackgroundImageFile = (file: File) => new Promise<string>((resolve, reject) => {
+  if (!file.type.startsWith('image/')) {
+    reject(new Error('Selected file is not an image.'));
+    return;
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  const image = new Image();
+  image.onload = () => {
+    const scale = Math.min(1, MAX_CUSTOM_BACKGROUND_DIMENSION / Math.max(image.width, image.height));
+    const nextWidth = Math.max(1, Math.round(image.width * scale));
+    const nextHeight = Math.max(1, Math.round(image.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = nextWidth;
+    canvas.height = nextHeight;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Failed to create image canvas.'));
+      return;
+    }
+
+    context.drawImage(image, 0, 0, nextWidth, nextHeight);
+    const dataUrl = canvas.toDataURL('image/jpeg', CUSTOM_BACKGROUND_OUTPUT_QUALITY);
+    URL.revokeObjectURL(objectUrl);
+    resolve(dataUrl);
+  };
+  image.onerror = () => {
+    URL.revokeObjectURL(objectUrl);
+    reject(new Error('Failed to load image file.'));
+  };
+  image.src = objectUrl;
+});
 
 export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [effect, setEffect] = useState<'blur' | 'streamer'>('streamer');
+  const [backgroundSource, setBackgroundSource] = useState<'default' | 'custom'>('default');
+  const [customBackgroundImage, setCustomBackgroundImage] = useState<string | null>(null);
+  const [customBackgroundBlur, setCustomBackgroundBlur] = useState(DEFAULT_CUSTOM_BACKGROUND_BLUR);
   const [song, setSong] = useState<Song>(EMPTY_SONG);
   const [playbackQueue, setPlaybackQueue] = useState<Song[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
@@ -93,6 +134,30 @@ export default function App() {
   const handleManualLibraryRefresh = () => {
     void refreshLibrary({ forceRefresh: true });
   };
+
+  const handleSelectCustomBackground = async (file: File | null) => {
+    if (!file) return;
+
+    try {
+      const compressedImage = await compressBackgroundImageFile(file);
+      setCustomBackgroundImage(compressedImage);
+      setBackgroundSource('custom');
+    } catch (error) {
+      console.error('Failed to prepare custom background:', error);
+    }
+  };
+
+  const handleRemoveCustomBackground = () => {
+    setCustomBackgroundImage(null);
+    setBackgroundSource('default');
+  };
+
+  const isCustomBackgroundActive = backgroundSource === 'custom' && Boolean(customBackgroundImage);
+  const appShellStyle = isCustomBackgroundActive ? ({
+    ['--rf-custom-blur-soft' as '--rf-custom-blur-soft']: `${Math.round(customBackgroundBlur * 0.55)}px`,
+    ['--rf-custom-blur-medium' as '--rf-custom-blur-medium']: `${Math.round(customBackgroundBlur * 0.78)}px`,
+    ['--rf-custom-blur-strong' as '--rf-custom-blur-strong']: `${customBackgroundBlur}px`,
+  } as React.CSSProperties) : undefined;
 
   const settingsCopy = useMemo(() => getSettingsCopy(language), [language]);
   const uiText = useMemo(() => {
@@ -425,7 +490,7 @@ export default function App() {
       if (!rawPreferences) return;
 
       const parsed = JSON.parse(rawPreferences) as Partial<StoredPreferences>;
-      if (parsed.version !== PREFERENCES_STORAGE_VERSION) return;
+      if (parsed.version !== 1 && parsed.version !== PREFERENCES_STORAGE_VERSION) return;
 
       if (parsed.language === 'zh-CN' || parsed.language === 'en-US') {
         setLanguage(parsed.language);
@@ -433,6 +498,18 @@ export default function App() {
 
       if (parsed.effect === 'blur' || parsed.effect === 'streamer') {
         setEffect(parsed.effect);
+      }
+
+      if (parsed.backgroundSource === 'default' || parsed.backgroundSource === 'custom') {
+        setBackgroundSource(parsed.backgroundSource);
+      }
+
+      if (typeof parsed.customBackgroundImage === 'string') {
+        setCustomBackgroundImage(parsed.customBackgroundImage);
+      }
+
+      if (typeof parsed.customBackgroundBlur === 'number' && Number.isFinite(parsed.customBackgroundBlur)) {
+        setCustomBackgroundBlur(Math.min(120, Math.max(0, parsed.customBackgroundBlur)));
       }
 
       if (typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)) {
@@ -514,13 +591,16 @@ export default function App() {
       version: PREFERENCES_STORAGE_VERSION,
       language,
       effect,
+      backgroundSource,
+      customBackgroundImage,
+      customBackgroundBlur,
       volume,
       loopMode,
       isShuffle,
     };
 
     window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
-  }, [hasLoadedPreferences, language, effect, volume, loopMode, isShuffle]);
+  }, [hasLoadedPreferences, language, effect, backgroundSource, customBackgroundImage, customBackgroundBlur, volume, loopMode, isShuffle]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1061,7 +1141,11 @@ export default function App() {
       : sidebarItems.find((item) => item.id === activeLibrarySection)?.label || uiText.brandSubtitle;
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden pt-14 text-white font-sans selection:bg-white/20">
+    <div
+      className="relative h-screen w-screen overflow-hidden pt-14 text-white font-sans selection:bg-white/20"
+      data-custom-background={isCustomBackgroundActive ? 'true' : 'false'}
+      style={appShellStyle}
+    >
       <WindowChrome
         appName={APP_NAME}
         subtitle={currentWindowSubtitle}
@@ -1088,7 +1172,13 @@ export default function App() {
         onClose={handleWindowClose}
       />
 
-      <Background imageSrc={song.cover} effect={effect} />
+      <Background
+        imageSrc={song.cover}
+        effect={effect}
+        customBackground={backgroundSource === 'custom' && customBackgroundImage
+          ? { imageSrc: customBackgroundImage, blur: customBackgroundBlur }
+          : null}
+      />
       <audio ref={audioRef} />
 
       <AnimatePresence mode="wait">
@@ -1101,7 +1191,7 @@ export default function App() {
             className="h-full w-full p-4 pb-32 md:p-6 md:pb-36"
           >
             <div className="h-full flex gap-4 min-w-0">
-              <aside className="min-h-0 w-[clamp(14rem,24vw,18rem)] rounded-4xl border border-white/10 bg-black/25 backdrop-blur-3xl shadow-2xl flex flex-col overflow-hidden shrink-0">
+              <aside className="min-h-0 w-[clamp(14rem,24vw,18rem)] rounded-4xl border border-white/10 bg-black/25 backdrop-blur-3xl customizable-backdrop-strong shadow-2xl flex flex-col overflow-hidden shrink-0">
                 <div className="px-5 pt-5 pb-4 border-b border-white/10">
                   <div className="flex items-center gap-3">
                     <AppLogo className="h-12 w-12 rounded-[18px]" />
@@ -1238,7 +1328,7 @@ export default function App() {
                 </div>
               </aside>
 
-              <section className="min-h-0 min-w-0 flex-1 rounded-4xl border border-white/10 bg-black/20 backdrop-blur-3xl shadow-2xl overflow-hidden relative">
+              <section className="min-h-0 min-w-0 flex-1 rounded-4xl border border-white/10 bg-black/20 backdrop-blur-3xl customizable-backdrop-strong shadow-2xl overflow-hidden relative">
                 <Library
                   songs={librarySongs}
                   playlists={savedPlaylists}
@@ -1281,10 +1371,14 @@ export default function App() {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             className={cn(
-              'h-full w-full flex flex-col md:flex-row items-center justify-center gap-12 p-8 md:p-24 transition-all duration-700',
+              'relative h-full w-full flex flex-col md:flex-row items-center justify-center gap-12 p-8 md:p-24 transition-all duration-700',
               (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'justify-center' : ''
             )}
           >
+            {isCustomBackgroundActive && (
+              <div className="pointer-events-none absolute inset-0 bg-black/8 customizable-backdrop-strong" />
+            )}
+
             <div className="absolute top-6 right-6 z-50">
               <div className="flex gap-4">
                 <button
@@ -1304,7 +1398,7 @@ export default function App() {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -50 }}
                   className={cn(
-                    'flex flex-col items-center gap-12 transition-all duration-700',
+                    'relative z-10 flex flex-col items-center gap-12 transition-all duration-700',
                     (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'w-full' : 'w-full md:w-1/2'
                   )}
                 >
@@ -1374,7 +1468,7 @@ export default function App() {
                   exit={{ opacity: 0, x: 50 }}
                   transition={{ duration: 0.3 }}
                   className={cn(
-                    'h-full flex flex-col justify-center transition-all duration-700',
+                    'relative z-10 h-full flex flex-col justify-center transition-all duration-700',
                     isFullScreen ? 'w-full max-w-4xl' : 'w-full md:w-1/2'
                   )}
                 >
@@ -1414,7 +1508,7 @@ export default function App() {
             exit={{ opacity: 0, y: 10 }}
             className="absolute inset-x-0 top-14 bottom-0 z-105 p-4 md:p-6"
           >
-            <div className="h-full rounded-4xl border border-white/10 bg-black/45 backdrop-blur-3xl shadow-2xl overflow-hidden">
+            <div className="h-full rounded-4xl border border-white/10 bg-black/45 backdrop-blur-3xl customizable-backdrop-strong shadow-2xl overflow-hidden">
               <SettingsView
                 copy={settingsCopy}
                 language={language}
@@ -1426,7 +1520,14 @@ export default function App() {
                 onRefreshLibrary={handleManualLibraryRefresh}
                 isRefreshingLibrary={isLoadingLibrary}
                 effect={effect}
+                backgroundSource={backgroundSource}
+                hasCustomBackground={Boolean(customBackgroundImage)}
+                customBackgroundBlur={customBackgroundBlur}
                 onEffectChange={setEffect}
+                onBackgroundSourceChange={setBackgroundSource}
+                onSelectCustomBackground={handleSelectCustomBackground}
+                onRemoveCustomBackground={handleRemoveCustomBackground}
+                onCustomBackgroundBlurChange={setCustomBackgroundBlur}
                 libraryCount={librarySongs.length}
                 appName={APP_NAME}
                 appVersion={APP_VERSION}
@@ -1444,7 +1545,7 @@ export default function App() {
             exit={{ opacity: 0, y: 12 }}
             className="absolute top-6 left-1/2 -translate-x-1/2 z-110 pointer-events-none"
           >
-            <div className="rounded-2xl border border-white/10 bg-black/70 backdrop-blur-2xl px-4 py-3 text-sm text-white/90 shadow-2xl">
+            <div className="rounded-2xl border border-white/10 bg-black/70 backdrop-blur-2xl customizable-backdrop-medium px-4 py-3 text-sm text-white/90 shadow-2xl">
               {toastMessage}
             </div>
           </motion.div>
@@ -1455,13 +1556,13 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 z-120 flex items-center justify-center px-4 bg-black/60 backdrop-blur-md"
+            className="absolute inset-0 z-120 flex items-center justify-center px-4 bg-black/60 backdrop-blur-md customizable-backdrop-soft"
           >
             <motion.div
               initial={{ opacity: 0, y: 24, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 24, scale: 0.98 }}
-              className="w-full max-w-md rounded-4xl border border-white/10 bg-[#090909]/90 shadow-2xl backdrop-blur-3xl p-6"
+              className="w-full max-w-md rounded-4xl border border-white/10 bg-[#090909]/90 shadow-2xl backdrop-blur-3xl customizable-backdrop-strong p-6"
             >
               {playlistModalState.type === 'create-playlist' || playlistModalState.type === 'rename-playlist' ? (
                 <>
