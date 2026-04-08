@@ -181,3 +181,15 @@ npm run lint
 如果你需要更完整的维护说明、模块边界和开发手册，请继续阅读 DOCUMENT.md。
 
 README 用于快速了解项目，DOCUMENT.md 用于深入维护项目。
+
+## 界面预览
+
+下面是应用界面的示例截图：
+
+<p align="center">
+   <img src="./imgs/1.png" alt="主界面 - 媒体库与播放器" width="900" />
+</p>
+
+<p align="center">
+   <img src="./imgs/2.png" alt="迷你播放器 - 紧凑控件与可视化" width="500" />
+</p>

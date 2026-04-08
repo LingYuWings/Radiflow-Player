@@ -182,6 +182,18 @@ For a deeper maintenance-oriented guide, read DOCUMENT.md.
 
 README is intended as the project front page. DOCUMENT.md is intended as the detailed developer manual.
 
+## Screenshots
+
+Below are example screenshots of the app interface:
+
+<p align="center">
+	<img src="./imgs/1.png" alt="Main window - library and player" width="900" />
+</p>
+
+<p align="center">
+	<img src="./imgs/2.png" alt="Mini player - compact controls and visualizer" width="500" />
+</p>
+
 ## Chinese Version
 
 If you prefer Chinese documentation, open [readme-zh.md](./readme-zh.md).
