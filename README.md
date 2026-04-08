@@ -191,7 +191,7 @@ Below are example screenshots of the app interface:
 </p>
 
 <p align="center">
-	<img src="./imgs/2.png" alt="Mini player - compact controls and visualizer" width="500" />
+	<img src="./imgs/2.png" alt="Mini player - compact controls and visualizer" width="900" />
 </p>
 
 ## Chinese Version

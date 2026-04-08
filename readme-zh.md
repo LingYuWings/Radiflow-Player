@@ -191,5 +191,5 @@ README 用于快速了解项目，DOCUMENT.md 用于深入维护项目。
 </p>
 
 <p align="center">
-   <img src="./imgs/2.png" alt="迷你播放器 - 紧凑控件与可视化" width="500" />
+   <img src="./imgs/2.png" alt="迷你播放器 - 紧凑控件与可视化" width="900" />
 </p>
