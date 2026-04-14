@@ -15,14 +15,17 @@ interface SettingsViewProps {
   onRefreshLibrary: () => void;
   isRefreshingLibrary: boolean;
   effect: 'blur' | 'streamer';
-  backgroundSource: 'default' | 'custom';
+  backgroundSource: 'default' | 'custom' | 'transparent';
   hasCustomBackground: boolean;
   customBackgroundBlur: number;
+  transparentBackgroundBlur: number;
+  supportsTransparentBackground: boolean;
   onEffectChange: (effect: 'blur' | 'streamer') => void;
-  onBackgroundSourceChange: (source: 'default' | 'custom') => void;
+  onBackgroundSourceChange: (source: 'default' | 'custom' | 'transparent') => void;
   onSelectCustomBackground: (file: File | null) => void;
   onRemoveCustomBackground: () => void;
   onCustomBackgroundBlurChange: (blur: number) => void;
+  onTransparentBackgroundBlurChange: (blur: number) => void;
   libraryCount: number;
   appName: string;
   appVersion: string;
@@ -58,11 +61,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   backgroundSource,
   hasCustomBackground,
   customBackgroundBlur,
+  transparentBackgroundBlur,
+  supportsTransparentBackground,
   onEffectChange,
   onBackgroundSourceChange,
   onSelectCustomBackground,
   onRemoveCustomBackground,
   onCustomBackgroundBlurChange,
+  onTransparentBackgroundBlurChange,
   libraryCount,
   appName,
   appVersion,
@@ -172,7 +178,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <p className="text-sm font-semibold text-white">{copy.backgroundSource}</p>
                 <p className="text-sm text-white/45 mt-1">{copy.customBackgroundDescription}</p>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <button
                   type="button"
                   onClick={() => onBackgroundSourceChange('default')}
@@ -198,7 +204,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 >
                   {copy.useCustomBackground}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => onBackgroundSourceChange('transparent')}
+                  disabled={!supportsTransparentBackground}
+                  className={cn(
+                    'rounded-2xl px-4 py-3 text-sm font-semibold transition-all border disabled:opacity-40 disabled:hover:bg-white/5 disabled:hover:text-white/65',
+                    backgroundSource === 'transparent'
+                      ? 'bg-white text-black border-white shadow-lg'
+                      : 'bg-white/5 text-white/65 border-white/10 hover:bg-white/10 hover:text-white'
+                  )}
+                >
+                  {copy.useTransparentBackground}
+                </button>
               </div>
+
+              {!supportsTransparentBackground && (
+                <p className="text-sm text-amber-200/80">{copy.transparentBackgroundUnsupported}</p>
+              )}
 
               <input
                 ref={backgroundFileInputRef}
@@ -252,6 +275,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     onChange={(event) => onCustomBackgroundBlurChange(Number.parseInt(event.target.value, 10))}
                     className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer accent-white"
                   />
+                </div>
+              )}
+
+              {backgroundSource === 'transparent' && (
+                <div className="space-y-4 pt-2">
+                  <p className="text-sm text-white/45">{copy.transparentBackgroundDescription}</p>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <p className="text-sm font-semibold text-white">{copy.transparentBackgroundBlur}</p>
+                      <span className="text-xs font-mono uppercase tracking-[0.18em] text-white/45">{transparentBackgroundBlur}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="120"
+                      step="1"
+                      value={transparentBackgroundBlur}
+                      onChange={(event) => onTransparentBackgroundBlurChange(Number.parseInt(event.target.value, 10))}
+                      className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer accent-white"
+                    />
+                  </div>
                 </div>
               )}
 

@@ -8,8 +8,8 @@ interface BackgroundProps {
   effect: 'blur' | 'streamer';
   customBackground?: {
     imageSrc: string;
-    blur: number;
   } | null;
+  transparentBackground?: boolean;
 }
 
 interface StreamerPaletteState {
@@ -86,15 +86,16 @@ const BLOB_CONFIGS = [
   { duration:  70, xKeys: [0,  -80, -160,  -50, 0], yKeys: [0,  200,  130,   280, 0], left: '25%', top: '88%' },
 ];
 
-export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, customBackground = null }) => {
+export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, customBackground = null, transparentBackground = false }) => {
   const [streamerLayers, setStreamerLayers] = useState<StreamerPaletteState[]>([
     { key: 'default', colors: DEFAULT_STREAMER_COLORS },
   ]);
   const paletteRequestIdRef = useRef(0);
   const isUsingCustomBackground = Boolean(customBackground?.imageSrc);
+  const shouldSkipBuiltInBackground = isUsingCustomBackground || transparentBackground;
 
   useEffect(() => {
-    if (isUsingCustomBackground || !imageSrc) {
+    if (shouldSkipBuiltInBackground || !imageSrc) {
       setStreamerLayers([{ key: 'default', colors: DEFAULT_STREAMER_COLORS }]);
       return;
     }
@@ -136,7 +137,7 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
     return () => {
       isDisposed = true;
     };
-  }, [imageSrc, isUsingCustomBackground]);
+  }, [imageSrc, shouldSkipBuiltInBackground]);
 
   useEffect(() => {
     if (streamerLayers.length < 2) {
@@ -154,7 +155,10 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
   const customBackgroundKey = `custom:${customBackground?.imageSrc || 'empty'}`;
 
   return (
-    <div className="fixed inset-0 -z-10 overflow-hidden bg-black">
+    <div
+      className={transparentBackground ? 'fixed inset-0 -z-10 overflow-hidden bg-transparent' : 'fixed inset-0 -z-10 overflow-hidden bg-black'}
+      style={{ clipPath: 'inset(0 round 24px)' }}
+    >
       {isUsingCustomBackground ? (
         <AnimatePresence mode="wait">
           <motion.div
@@ -173,7 +177,7 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
             />
           </motion.div>
         </AnimatePresence>
-      ) : effect === 'blur' ? (
+      ) : transparentBackground ? null : effect === 'blur' ? (
         <AnimatePresence mode="wait">
           <motion.div
             key={blurBackgroundKey}
@@ -224,7 +228,7 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
           <div className="absolute inset-0 backdrop-blur-[100px]" />
         </div>
       )}
-      <div className="absolute inset-0 bg-black/40" />
+      {!transparentBackground && <div className="absolute inset-0 bg-black/40" />}
     </div>
   );
 };

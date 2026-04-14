@@ -10,7 +10,7 @@
     "dev": "tsx server.ts",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
     "build": "vite build",
-    "electron:preview": "npm run build && node scripts/electron-preview.mjs",
+    "electron:preview": "node scripts/electron-preview.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"

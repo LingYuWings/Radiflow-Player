@@ -95,13 +95,17 @@ export interface SettingsCopy {
 	 backgroundSource: string;
 	 useBuiltInBackground: string;
 	 useCustomBackground: string;
+	 useTransparentBackground: string;
 	 customBackgroundDescription: string;
+	 transparentBackgroundDescription: string;
+	 transparentBackgroundUnsupported: string;
 	 uploadCustomBackground: string;
 	 replaceCustomBackground: string;
 	 removeCustomBackground: string;
 	 customBackgroundNotSelected: string;
 	 customBackgroundReady: string;
 	 customBackgroundBlur: string;
+	 transparentBackgroundBlur: string;
 	backgroundEffect: string;
 	blurMode: string;
 	streamerMode: string;
@@ -213,13 +217,17 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			backgroundSource: '背景来源',
 			useBuiltInBackground: '项目内置背景',
 			useCustomBackground: '自定义背景',
+			useTransparentBackground: '透明背景',
 			customBackgroundDescription: '上传一张背景图片，并自定义其模糊程度。启用后将覆盖当前歌曲封面和内置背景效果。',
+			transparentBackgroundDescription: '启用透明窗口背景，并使用系统级毛玻璃材质。滑杆会在不同材质强度之间切换，该模式不会渲染项目内置背景。',
+			transparentBackgroundUnsupported: '当前系统不支持 Electron 的系统级毛玻璃。该功能需要 Windows 11 22H2 或更高版本。',
 			uploadCustomBackground: '上传背景图片',
 			replaceCustomBackground: '替换背景图片',
 			removeCustomBackground: '移除自定义背景',
 			customBackgroundNotSelected: '当前未选择自定义背景图片。',
 			customBackgroundReady: '已选择自定义背景图片',
 			customBackgroundBlur: '背景模糊程度',
+			transparentBackgroundBlur: '透明毛玻璃强度',
 			backgroundEffect: '背景效果',
 			blurMode: '模糊',
 			streamerMode: '光流',
@@ -322,13 +330,17 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			backgroundSource: 'Background Source',
 			useBuiltInBackground: 'Built-in Background',
 			useCustomBackground: 'Custom Background',
+			useTransparentBackground: 'Transparent Background',
 			customBackgroundDescription: 'Upload a background image and control its blur amount. When enabled, it overrides the current song-based background rendering.',
+			transparentBackgroundDescription: 'Use a transparent window background with system-level glass material. The slider switches between different material strengths and skips the built-in background renderer.',
+			transparentBackgroundUnsupported: 'System glass material is not available on this machine. Electron requires Windows 11 22H2 or newer for this feature.',
 			uploadCustomBackground: 'Upload Background',
 			replaceCustomBackground: 'Replace Background',
 			removeCustomBackground: 'Remove Custom Background',
 			customBackgroundNotSelected: 'No custom background image selected yet.',
 			customBackgroundReady: 'Custom background image selected',
 			customBackgroundBlur: 'Background Blur Amount',
+			transparentBackgroundBlur: 'Transparent Glass Strength',
 			backgroundEffect: 'Background Effect',
 			blurMode: 'Blur',
 			streamerMode: 'Streamer',

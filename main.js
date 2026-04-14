@@ -3,12 +3,14 @@ import path from 'path';
 import isDev from 'electron-is-dev';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const APP_NAME = 'RadiFlow Player';
 const MIN_WINDOW_WIDTH = 1200;
 const MIN_WINDOW_HEIGHT = 880;
+const WINDOW_CORNER_RADIUS = 24;
 
 let mainWindow;
 let tray;
@@ -44,6 +46,94 @@ if (customUserDataPath) {
   app.setPath('userData', customUserDataPath);
 }
 
+function getBackgroundMaterialSupport() {
+  const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : os.release();
+  const buildSegment = systemVersion.split('.').at(-1) ?? '0';
+  const buildNumber = Number.parseInt(buildSegment, 10);
+  const supported = process.platform === 'win32'
+    && Number.isFinite(buildNumber)
+    && buildNumber >= 22621
+    && typeof BrowserWindow.prototype.setBackgroundMaterial === 'function';
+
+  return {
+    supported,
+    systemVersion,
+    minimumVersion: 'Windows 11 22H2 (build 22621)',
+  };
+}
+
+function setWindowBackgroundMaterial(mode = 'none') {
+  const support = getBackgroundMaterialSupport();
+  if (!mainWindow) {
+    return false;
+  }
+
+  if (mode === 'none') {
+    if (support.supported && typeof mainWindow.setBackgroundMaterial === 'function') {
+      try {
+        mainWindow.setBackgroundMaterial('none');
+      } catch {
+        // Fall through and still restore the transparent background color.
+      }
+    }
+
+    mainWindow.setBackgroundColor('#00000000');
+    return true;
+  }
+
+  if (!support.supported || typeof mainWindow.setBackgroundMaterial !== 'function') {
+    return false;
+  }
+
+  try {
+    mainWindow.setBackgroundMaterial(mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildRoundedWindowShape(width, height, radius) {
+  const safeWidth = Math.max(1, Math.floor(width));
+  const safeHeight = Math.max(1, Math.floor(height));
+  const safeRadius = Math.max(0, Math.min(Math.floor(radius), Math.floor(safeWidth / 2), Math.floor(safeHeight / 2)));
+
+  if (safeRadius === 0) {
+    return [{ x: 0, y: 0, width: safeWidth, height: safeHeight }];
+  }
+
+  const rects = [];
+
+  for (let row = 0; row < safeRadius; row += 1) {
+    const delta = safeRadius - row - 0.5;
+    const inset = Math.max(0, Math.ceil(safeRadius - Math.sqrt(Math.max(0, safeRadius * safeRadius - delta * delta))));
+    const rowWidth = Math.max(1, safeWidth - inset * 2);
+
+    rects.push({ x: inset, y: row, width: rowWidth, height: 1 });
+    rects.push({ x: inset, y: safeHeight - row - 1, width: rowWidth, height: 1 });
+  }
+
+  if (safeHeight > safeRadius * 2) {
+    rects.push({ x: 0, y: safeRadius, width: safeWidth, height: safeHeight - safeRadius * 2 });
+  }
+
+  return rects;
+}
+
+function updateWindowShape() {
+  if (!mainWindow || process.platform !== 'win32' || typeof mainWindow.setShape !== 'function') {
+    return;
+  }
+
+  const [width, height] = mainWindow.getSize();
+  if (mainWindow.isMaximized() || mainWindow.isFullScreen()) {
+    mainWindow.setShape([{ x: 0, y: 0, width, height }]);
+    return;
+  }
+
+  mainWindow.setShape(buildRoundedWindowShape(width, height, WINDOW_CORNER_RADIUS));
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -51,8 +141,12 @@ function createWindow() {
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     title: APP_NAME,
-    backgroundColor: '#050505',
+    backgroundColor: '#00000000',
+    transparent: true,
     frame: false,
+    roundedCorners: true,
+    thickFrame: true,
+    hasShadow: true,
     autoHideMenuBar: true,
     icon: appIcon,
     webPreferences: {
@@ -74,15 +168,24 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   }
 
+  setWindowBackgroundMaterial('none');
+  updateWindowShape();
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 
+  mainWindow.on('resize', () => {
+    updateWindowShape();
+  });
+
   mainWindow.on('maximize', () => {
+    updateWindowShape();
     mainWindow?.webContents.send('window:maximized-state-changed', true);
   });
 
   mainWindow.on('unmaximize', () => {
+    updateWindowShape();
     mainWindow?.webContents.send('window:maximized-state-changed', false);
   });
 }
@@ -186,4 +289,17 @@ ipcMain.handle('window:close', () => {
 
 ipcMain.handle('window:is-maximized', () => {
   return mainWindow?.isMaximized() ?? false;
+});
+
+ipcMain.handle('window:set-background-material', (event, mode) => {
+  const nextMode = mode === 'acrylic' || mode === 'mica' || mode === 'tabbed' || mode === 'auto' ? mode : 'none';
+  return {
+    ...getBackgroundMaterialSupport(),
+    applied: nextMode === 'none' ? true : setWindowBackgroundMaterial(nextMode),
+    mode: nextMode,
+  };
+});
+
+ipcMain.handle('window:get-background-material-support', () => {
+  return getBackgroundMaterialSupport();
 });

@@ -33,10 +33,11 @@ const APP_NAME = 'RadiFlow Player';
 const APP_VERSION = '0.0.0';
 const PLAYLIST_STORAGE_KEY = 'apple-music-style-player.playlists';
 const PREFERENCES_STORAGE_KEY = 'apple-music-style-player.preferences';
-const PREFERENCES_STORAGE_VERSION = 2;
+const PREFERENCES_STORAGE_VERSION = 3;
 const PLAYBACK_SESSION_STORAGE_KEY = 'apple-music-style-player.playback-session';
 const PLAYBACK_SESSION_STORAGE_VERSION = 1;
 const DEFAULT_CUSTOM_BACKGROUND_BLUR = 72;
+const DEFAULT_TRANSPARENT_BACKGROUND_BLUR = 72;
 const MAX_CUSTOM_BACKGROUND_DIMENSION = 1920;
 const CUSTOM_BACKGROUND_OUTPUT_QUALITY = 0.84;
 
@@ -80,9 +81,11 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [effect, setEffect] = useState<'blur' | 'streamer'>('streamer');
-  const [backgroundSource, setBackgroundSource] = useState<'default' | 'custom'>('default');
+  const [backgroundSource, setBackgroundSource] = useState<'default' | 'custom' | 'transparent'>('default');
   const [customBackgroundImage, setCustomBackgroundImage] = useState<string | null>(null);
   const [customBackgroundBlur, setCustomBackgroundBlur] = useState(DEFAULT_CUSTOM_BACKGROUND_BLUR);
+  const [transparentBackgroundBlur, setTransparentBackgroundBlur] = useState(DEFAULT_TRANSPARENT_BACKGROUND_BLUR);
+  const [supportsTransparentBackground, setSupportsTransparentBackground] = useState<boolean | null>(null);
   const [song, setSong] = useState<Song>(EMPTY_SONG);
   const [playbackQueue, setPlaybackQueue] = useState<Song[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
@@ -153,6 +156,13 @@ export default function App() {
   };
 
   const isCustomBackgroundActive = backgroundSource === 'custom' && Boolean(customBackgroundImage);
+  const isTransparentBackgroundActive = backgroundSource === 'transparent';
+  const isPersonalizedBackgroundActive = isCustomBackgroundActive || isTransparentBackgroundActive;
+  const transparentBackgroundMaterial = transparentBackgroundBlur <= 0
+    ? 'none'
+    : transparentBackgroundBlur < 44
+      ? 'mica'
+      : 'acrylic';
   const appShellStyle = isCustomBackgroundActive ? ({
     ['--rf-custom-blur-soft' as '--rf-custom-blur-soft']: `${Math.round(customBackgroundBlur * 0.55)}px`,
     ['--rf-custom-blur-medium' as '--rf-custom-blur-medium']: `${Math.round(customBackgroundBlur * 0.78)}px`,
@@ -204,6 +214,7 @@ export default function App() {
         addNoop: '这些歌曲已存在于目标播放列表',
         playlistDeletedFallback: '已删除的播放列表',
         openSettings: '打开设置',
+        settingsTransparentUnsupported: '当前系统不支持系统级毛玻璃透明背景',
       };
     }
 
@@ -249,8 +260,18 @@ export default function App() {
       addNoop: 'Those tracks are already in the target playlist',
       playlistDeletedFallback: 'Deleted playlist',
       openSettings: 'Open Settings',
+      settingsTransparentUnsupported: 'System glass transparency is not supported on this machine',
     };
   }, [language]);
+
+  const handleBackgroundSourceChange = (source: 'default' | 'custom' | 'transparent') => {
+    if (source === 'transparent' && supportsTransparentBackground === false) {
+      setToastMessage(uiText.settingsTransparentUnsupported);
+      return;
+    }
+
+    setBackgroundSource(source);
+  };
 
   const savedPlaylists = useMemo(
     () => rebuildPlaylistCollections(playlistDefinitions, librarySongs),
@@ -490,7 +511,7 @@ export default function App() {
       if (!rawPreferences) return;
 
       const parsed = JSON.parse(rawPreferences) as Partial<StoredPreferences>;
-      if (parsed.version !== 1 && parsed.version !== PREFERENCES_STORAGE_VERSION) return;
+      if (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== PREFERENCES_STORAGE_VERSION) return;
 
       if (parsed.language === 'zh-CN' || parsed.language === 'en-US') {
         setLanguage(parsed.language);
@@ -500,7 +521,7 @@ export default function App() {
         setEffect(parsed.effect);
       }
 
-      if (parsed.backgroundSource === 'default' || parsed.backgroundSource === 'custom') {
+      if (parsed.backgroundSource === 'default' || parsed.backgroundSource === 'custom' || parsed.backgroundSource === 'transparent') {
         setBackgroundSource(parsed.backgroundSource);
       }
 
@@ -510,6 +531,10 @@ export default function App() {
 
       if (typeof parsed.customBackgroundBlur === 'number' && Number.isFinite(parsed.customBackgroundBlur)) {
         setCustomBackgroundBlur(Math.min(120, Math.max(0, parsed.customBackgroundBlur)));
+      }
+
+      if (typeof parsed.transparentBackgroundBlur === 'number' && Number.isFinite(parsed.transparentBackgroundBlur)) {
+        setTransparentBackgroundBlur(Math.min(120, Math.max(0, parsed.transparentBackgroundBlur)));
       }
 
       if (typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)) {
@@ -594,13 +619,39 @@ export default function App() {
       backgroundSource,
       customBackgroundImage,
       customBackgroundBlur,
+      transparentBackgroundBlur,
       volume,
       loopMode,
       isShuffle,
     };
 
     window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
-  }, [hasLoadedPreferences, language, effect, backgroundSource, customBackgroundImage, customBackgroundBlur, volume, loopMode, isShuffle]);
+  }, [hasLoadedPreferences, language, effect, backgroundSource, customBackgroundImage, customBackgroundBlur, transparentBackgroundBlur, volume, loopMode, isShuffle]);
+
+  useEffect(() => {
+    if (!ipc) return;
+
+    ipc.invoke('window:get-background-material-support')
+      .then((result: { supported?: boolean } | null) => {
+        setSupportsTransparentBackground(Boolean(result?.supported));
+      })
+      .catch(() => {
+        setSupportsTransparentBackground(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (backgroundSource === 'transparent' && supportsTransparentBackground === false) {
+      setBackgroundSource('default');
+    }
+  }, [backgroundSource, supportsTransparentBackground]);
+
+  useEffect(() => {
+    if (!ipc) return;
+
+    const backgroundMaterial = backgroundSource === 'transparent' ? transparentBackgroundMaterial : 'none';
+    ipc.invoke('window:set-background-material', backgroundMaterial).catch(() => undefined);
+  }, [backgroundSource, transparentBackgroundMaterial]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1143,7 +1194,7 @@ export default function App() {
   return (
     <div
       className="relative h-screen w-screen overflow-hidden pt-14 text-white font-sans selection:bg-white/20"
-      data-custom-background={isCustomBackgroundActive ? 'true' : 'false'}
+      data-custom-background={isPersonalizedBackgroundActive ? 'true' : 'false'}
       style={appShellStyle}
     >
       <WindowChrome
@@ -1176,8 +1227,9 @@ export default function App() {
         imageSrc={song.cover}
         effect={effect}
         customBackground={backgroundSource === 'custom' && customBackgroundImage
-          ? { imageSrc: customBackgroundImage, blur: customBackgroundBlur }
+          ? { imageSrc: customBackgroundImage }
           : null}
+        transparentBackground={isTransparentBackgroundActive}
       />
       <audio ref={audioRef} />
 
@@ -1375,8 +1427,13 @@ export default function App() {
               (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'justify-center' : ''
             )}
           >
-            {isCustomBackgroundActive && (
-              <div className="pointer-events-none absolute inset-0 bg-black/8 customizable-backdrop-strong" />
+            {isPersonalizedBackgroundActive && (
+              <div
+                className={cn(
+                  'pointer-events-none absolute inset-0',
+                  isCustomBackgroundActive ? 'bg-black/8 customizable-backdrop-strong' : 'bg-black/12'
+                )}
+              />
             )}
 
             <div className="absolute top-6 right-6 z-50">
@@ -1523,11 +1580,14 @@ export default function App() {
                 backgroundSource={backgroundSource}
                 hasCustomBackground={Boolean(customBackgroundImage)}
                 customBackgroundBlur={customBackgroundBlur}
+                transparentBackgroundBlur={transparentBackgroundBlur}
+                supportsTransparentBackground={supportsTransparentBackground !== false}
                 onEffectChange={setEffect}
-                onBackgroundSourceChange={setBackgroundSource}
+                onBackgroundSourceChange={handleBackgroundSourceChange}
                 onSelectCustomBackground={handleSelectCustomBackground}
                 onRemoveCustomBackground={handleRemoveCustomBackground}
                 onCustomBackgroundBlurChange={setCustomBackgroundBlur}
+                onTransparentBackgroundBlurChange={setTransparentBackgroundBlur}
                 libraryCount={librarySongs.length}
                 appName={APP_NAME}
                 appVersion={APP_VERSION}

@@ -42,9 +42,10 @@ export interface StoredPreferences {
   version: number;
   language: AppLanguage;
   effect: 'blur' | 'streamer';
-  backgroundSource?: 'default' | 'custom';
+  backgroundSource?: 'default' | 'custom' | 'transparent';
   customBackgroundImage?: string | null;
   customBackgroundBlur?: number;
+  transparentBackgroundBlur?: number;
   volume: number;
   loopMode: LoopMode;
   isShuffle: boolean;
