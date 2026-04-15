@@ -86,6 +86,11 @@ export default function App() {
   const [customBackgroundBlur, setCustomBackgroundBlur] = useState(DEFAULT_CUSTOM_BACKGROUND_BLUR);
   const [transparentBackgroundBlur, setTransparentBackgroundBlur] = useState(DEFAULT_TRANSPARENT_BACKGROUND_BLUR);
   const [supportsTransparentBackground, setSupportsTransparentBackground] = useState<boolean | null>(null);
+  const [isTransparentWindowModeEnabled, setIsTransparentWindowModeEnabled] = useState(false);
+  const [transparentModeDialogState, setTransparentModeDialogState] = useState<{
+    nextSource: 'default' | 'custom' | 'transparent';
+    nextTransparentWindowMode: boolean;
+  } | null>(null);
   const [song, setSong] = useState<Song>(EMPTY_SONG);
   const [playbackQueue, setPlaybackQueue] = useState<Song[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
@@ -136,6 +141,27 @@ export default function App() {
 
   const handleManualLibraryRefresh = () => {
     void refreshLibrary({ forceRefresh: true });
+  };
+
+  const persistPreferencesSnapshot = (nextBackgroundSource: 'default' | 'custom' | 'transparent') => {
+    if (typeof window === 'undefined') return null;
+
+    const previousRawPreferences = window.localStorage.getItem(PREFERENCES_STORAGE_KEY);
+    const nextPreferences: StoredPreferences = {
+      version: PREFERENCES_STORAGE_VERSION,
+      language,
+      effect,
+      backgroundSource: nextBackgroundSource,
+      customBackgroundImage,
+      customBackgroundBlur,
+      transparentBackgroundBlur,
+      volume,
+      loopMode,
+      isShuffle,
+    };
+
+    window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(nextPreferences));
+    return previousRawPreferences;
   };
 
   const handleSelectCustomBackground = async (file: File | null) => {
@@ -215,6 +241,12 @@ export default function App() {
         playlistDeletedFallback: '已删除的播放列表',
         openSettings: '打开设置',
         settingsTransparentUnsupported: '当前系统不支持系统级毛玻璃透明背景',
+        transparentModeEnableTitle: '启用透明背景',
+        transparentModeEnableDescription: '透明背景仍属于实验性功能。确认后应用会立即重新启动，并切换到透明窗口模式。',
+        transparentModeDisableTitle: '退出透明背景',
+        transparentModeDisableDescription: '退出透明背景同样需要重新启动窗口，才能恢复常规背景渲染。',
+        transparentModeRestartConfirm: '重启并应用',
+        transparentModeRestartFailed: '重启失败，当前背景模式未变更。',
       };
     }
 
@@ -261,12 +293,61 @@ export default function App() {
       playlistDeletedFallback: 'Deleted playlist',
       openSettings: 'Open Settings',
       settingsTransparentUnsupported: 'System glass transparency is not supported on this machine',
+      transparentModeEnableTitle: 'Enable Transparent Background',
+      transparentModeEnableDescription: 'Transparent background is still experimental. Confirming will restart the app immediately and switch to transparent window mode.',
+      transparentModeDisableTitle: 'Exit Transparent Background',
+      transparentModeDisableDescription: 'Leaving transparent background also requires a restart so the window can return to the standard background renderer.',
+      transparentModeRestartConfirm: 'Restart and Apply',
+      transparentModeRestartFailed: 'Failed to restart the app. The current background mode was kept.',
     };
   }, [language]);
+
+  const closeTransparentModeDialog = () => {
+    setTransparentModeDialogState(null);
+  };
+
+  const confirmTransparentModeChange = async () => {
+    if (!transparentModeDialogState) return;
+
+    const { nextSource, nextTransparentWindowMode } = transparentModeDialogState;
+    closeTransparentModeDialog();
+
+    if (!ipc) {
+      setBackgroundSource(nextSource);
+      return;
+    }
+
+    const previousRawPreferences = persistPreferencesSnapshot(nextSource);
+
+    try {
+      await ipc.invoke('window:restart-with-shell-mode', nextTransparentWindowMode);
+    } catch {
+      if (typeof window !== 'undefined') {
+        if (previousRawPreferences === null) {
+          window.localStorage.removeItem(PREFERENCES_STORAGE_KEY);
+        } else {
+          window.localStorage.setItem(PREFERENCES_STORAGE_KEY, previousRawPreferences);
+        }
+      }
+
+      setToastMessage(uiText.transparentModeRestartFailed);
+    }
+  };
 
   const handleBackgroundSourceChange = (source: 'default' | 'custom' | 'transparent') => {
     if (source === 'transparent' && supportsTransparentBackground === false) {
       setToastMessage(uiText.settingsTransparentUnsupported);
+      return;
+    }
+
+    const shouldEnterTransparentWindowMode = source === 'transparent' && !isTransparentWindowModeEnabled;
+    const shouldExitTransparentWindowMode = source !== 'transparent' && isTransparentWindowModeEnabled;
+
+    if (shouldEnterTransparentWindowMode || shouldExitTransparentWindowMode) {
+      setTransparentModeDialogState({
+        nextSource: source,
+        nextTransparentWindowMode: source === 'transparent',
+      });
       return;
     }
 
@@ -631,12 +712,14 @@ export default function App() {
   useEffect(() => {
     if (!ipc) return;
 
-    ipc.invoke('window:get-background-material-support')
-      .then((result: { supported?: boolean } | null) => {
+    ipc.invoke('window:get-shell-state')
+      .then((result: { supported?: boolean; transparentWindow?: boolean } | null) => {
         setSupportsTransparentBackground(Boolean(result?.supported));
+        setIsTransparentWindowModeEnabled(Boolean(result?.transparentWindow));
       })
       .catch(() => {
         setSupportsTransparentBackground(false);
+        setIsTransparentWindowModeEnabled(false);
       });
   }, []);
 
@@ -649,9 +732,11 @@ export default function App() {
   useEffect(() => {
     if (!ipc) return;
 
-    const backgroundMaterial = backgroundSource === 'transparent' ? transparentBackgroundMaterial : 'none';
+    const backgroundMaterial = backgroundSource === 'transparent' && isTransparentWindowModeEnabled
+      ? transparentBackgroundMaterial
+      : 'none';
     ipc.invoke('window:set-background-material', backgroundMaterial).catch(() => undefined);
-  }, [backgroundSource, transparentBackgroundMaterial]);
+  }, [backgroundSource, isTransparentWindowModeEnabled, transparentBackgroundMaterial]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1729,6 +1814,52 @@ export default function App() {
                   </div>
                 </>
               )}
+            </motion.div>
+          </motion.div>
+        )}
+
+        {transparentModeDialogState && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-125 flex items-center justify-center px-4 bg-black/60 backdrop-blur-md customizable-backdrop-soft"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 24, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 24, scale: 0.98 }}
+              className="w-full max-w-md rounded-4xl border border-white/10 bg-[#090909]/90 shadow-2xl backdrop-blur-3xl customizable-backdrop-strong p-6"
+            >
+              <h2 className="text-2xl font-black tracking-tight text-white">
+                {transparentModeDialogState.nextTransparentWindowMode
+                  ? uiText.transparentModeEnableTitle
+                  : uiText.transparentModeDisableTitle}
+              </h2>
+              <p className="mt-2 text-sm text-white/45">
+                {transparentModeDialogState.nextTransparentWindowMode
+                  ? uiText.transparentModeEnableDescription
+                  : uiText.transparentModeDisableDescription}
+              </p>
+
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={closeTransparentModeDialog}
+                  className="rounded-2xl px-4 py-3 bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+                >
+                  {uiText.cancel}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void confirmTransparentModeChange();
+                  }}
+                  className="rounded-2xl px-4 py-3 bg-white text-black font-semibold transition-all"
+                >
+                  {uiText.transparentModeRestartConfirm}
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

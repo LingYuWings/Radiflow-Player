@@ -1,6 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, nativeImage } from 'electron';
 import path from 'path';
-import isDev from 'electron-is-dev';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import os from 'os';
@@ -11,11 +10,15 @@ const APP_NAME = 'RadiFlow Player';
 const MIN_WINDOW_WIDTH = 1200;
 const MIN_WINDOW_HEIGHT = 880;
 const WINDOW_CORNER_RADIUS = 24;
+const DEFAULT_WINDOW_BACKGROUND_COLOR = '#050505';
+const TRANSPARENT_WINDOW_BACKGROUND_COLOR = '#00000000';
+const SHELL_PREFERENCES_FILE_NAME = 'shell-preferences.json';
 
 let mainWindow;
 let tray;
 let musicPath = path.join(process.cwd(), 'music');
 const startUrl = process.env.ELECTRON_START_URL;
+const isDev = !app.isPackaged;
 const shouldOpenDevTools = isDev && process.env.ELECTRON_DISABLE_DEVTOOLS !== 'true' && !startUrl;
 const customUserDataPath = process.env.ELECTRON_USER_DATA_DIR;
 
@@ -46,6 +49,35 @@ if (customUserDataPath) {
   app.setPath('userData', customUserDataPath);
 }
 
+function getShellPreferencesPath() {
+  return path.join(app.getPath('userData'), SHELL_PREFERENCES_FILE_NAME);
+}
+
+function normalizeShellPreferences(value) {
+  return {
+    transparentWindow: Boolean(value?.transparentWindow),
+  };
+}
+
+function readShellPreferences() {
+  try {
+    const rawPreferences = fs.readFileSync(getShellPreferencesPath(), 'utf8');
+    return normalizeShellPreferences(JSON.parse(rawPreferences));
+  } catch {
+    return normalizeShellPreferences(null);
+  }
+}
+
+function writeShellPreferences(value) {
+  const nextPreferences = normalizeShellPreferences(value);
+  const shellPreferencesPath = getShellPreferencesPath();
+  fs.mkdirSync(path.dirname(shellPreferencesPath), { recursive: true });
+  fs.writeFileSync(shellPreferencesPath, JSON.stringify(nextPreferences));
+  return nextPreferences;
+}
+
+let shellPreferences = readShellPreferences();
+
 function getBackgroundMaterialSupport() {
   const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : os.release();
   const buildSegment = systemVersion.split('.').at(-1) ?? '0';
@@ -73,12 +105,20 @@ function setWindowBackgroundMaterial(mode = 'none') {
       try {
         mainWindow.setBackgroundMaterial('none');
       } catch {
-        // Fall through and still restore the transparent background color.
+        // Fall through and still restore the window background color.
       }
     }
 
-    mainWindow.setBackgroundColor('#00000000');
+    mainWindow.setBackgroundColor(
+      shellPreferences.transparentWindow
+        ? TRANSPARENT_WINDOW_BACKGROUND_COLOR
+        : DEFAULT_WINDOW_BACKGROUND_COLOR
+    );
     return true;
+  }
+
+  if (!shellPreferences.transparentWindow) {
+    return false;
   }
 
   if (!support.supported || typeof mainWindow.setBackgroundMaterial !== 'function') {
@@ -121,7 +161,7 @@ function buildRoundedWindowShape(width, height, radius) {
 }
 
 function updateWindowShape() {
-  if (!mainWindow || process.platform !== 'win32' || typeof mainWindow.setShape !== 'function') {
+  if (!mainWindow || process.platform !== 'win32' || typeof mainWindow.setShape !== 'function' || !shellPreferences.transparentWindow) {
     return;
   }
 
@@ -135,14 +175,16 @@ function updateWindowShape() {
 }
 
 function createWindow() {
+  const useTransparentWindow = shellPreferences.transparentWindow;
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     title: APP_NAME,
-    backgroundColor: '#00000000',
-    transparent: true,
+    backgroundColor: useTransparentWindow ? TRANSPARENT_WINDOW_BACKGROUND_COLOR : DEFAULT_WINDOW_BACKGROUND_COLOR,
+    transparent: useTransparentWindow,
     frame: false,
     roundedCorners: true,
     thickFrame: true,
@@ -302,4 +344,18 @@ ipcMain.handle('window:set-background-material', (event, mode) => {
 
 ipcMain.handle('window:get-background-material-support', () => {
   return getBackgroundMaterialSupport();
+});
+
+ipcMain.handle('window:get-shell-state', () => {
+  return {
+    ...getBackgroundMaterialSupport(),
+    transparentWindow: shellPreferences.transparentWindow,
+  };
+});
+
+ipcMain.handle('window:restart-with-shell-mode', async (event, transparentWindow) => {
+  shellPreferences = writeShellPreferences({ transparentWindow });
+  app.relaunch();
+  app.exit(0);
+  return true;
 });
