@@ -1312,7 +1312,10 @@ export default function App() {
         imageSrc={song.cover}
         effect={effect}
         customBackground={backgroundSource === 'custom' && customBackgroundImage
-          ? { imageSrc: customBackgroundImage }
+          ? {
+              imageSrc: customBackgroundImage,
+              blurStrength: customBackgroundBlur,
+            }
           : null}
         transparentBackground={isTransparentBackgroundActive}
       />

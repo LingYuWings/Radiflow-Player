@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, nativeImage } from 'electron';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs';
 import os from 'os';
 
@@ -9,6 +9,8 @@ const __dirname = path.dirname(__filename);
 const APP_NAME = 'RadiFlow Player';
 const MIN_WINDOW_WIDTH = 1200;
 const MIN_WINDOW_HEIGHT = 880;
+const DEFAULT_WINDOW_WIDTH = MIN_WINDOW_WIDTH;
+const DEFAULT_WINDOW_HEIGHT = MIN_WINDOW_HEIGHT;
 const WINDOW_CORNER_RADIUS = 24;
 const DEFAULT_WINDOW_BACKGROUND_COLOR = '#050505';
 const TRANSPARENT_WINDOW_BACKGROUND_COLOR = '#00000000';
@@ -17,6 +19,8 @@ const SHELL_PREFERENCES_FILE_NAME = 'shell-preferences.json';
 let mainWindow;
 let tray;
 let musicPath = path.join(process.cwd(), 'music');
+let packagedServer;
+let packagedServerUrl;
 const startUrl = process.env.ELECTRON_START_URL;
 const isDev = !app.isPackaged;
 const shouldOpenDevTools = isDev && process.env.ELECTRON_DISABLE_DEVTOOLS !== 'true' && !startUrl;
@@ -161,7 +165,7 @@ function buildRoundedWindowShape(width, height, radius) {
 }
 
 function updateWindowShape() {
-  if (!mainWindow || process.platform !== 'win32' || typeof mainWindow.setShape !== 'function' || !shellPreferences.transparentWindow) {
+  if (!mainWindow || process.platform !== 'win32' || typeof mainWindow.setShape !== 'function') {
     return;
   }
 
@@ -174,12 +178,40 @@ function updateWindowShape() {
   mainWindow.setShape(buildRoundedWindowShape(width, height, WINDOW_CORNER_RADIUS));
 }
 
+async function startPackagedLocalServer() {
+  if (packagedServerUrl) {
+    return packagedServerUrl;
+  }
+
+  const serverEntryPath = path.join(__dirname, 'dist-electron', 'server.js');
+  if (!fs.existsSync(serverEntryPath)) {
+    throw new Error(`Missing packaged server entry: ${serverEntryPath}`);
+  }
+
+  const serverModule = await import(pathToFileURL(serverEntryPath).href);
+  if (typeof serverModule.startServer !== 'function') {
+    throw new Error('Packaged server entry does not export startServer().');
+  }
+
+  const startedServer = await serverModule.startServer({
+    port: 0,
+    host: '127.0.0.1',
+    mode: 'production',
+    staticRoot: __dirname,
+    initialMusicDir: musicPath,
+  });
+
+  packagedServer = startedServer.server;
+  packagedServerUrl = startedServer.url;
+  return packagedServerUrl;
+}
+
 function createWindow() {
   const useTransparentWindow = shellPreferences.transparentWindow;
 
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: DEFAULT_WINDOW_WIDTH,
+    height: DEFAULT_WINDOW_HEIGHT,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     title: APP_NAME,
@@ -187,8 +219,9 @@ function createWindow() {
     transparent: useTransparentWindow,
     frame: false,
     roundedCorners: true,
-    thickFrame: true,
+    thickFrame: false,
     hasShadow: true,
+    accentColor: false,
     autoHideMenuBar: true,
     icon: appIcon,
     webPreferences: {
@@ -202,6 +235,8 @@ function createWindow() {
     mainWindow.loadURL(startUrl);
   } else if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
+  } else if (packagedServerUrl) {
+    mainWindow.loadURL(packagedServerUrl);
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist/index.html'));
   }
@@ -212,6 +247,14 @@ function createWindow() {
 
   setWindowBackgroundMaterial('none');
   updateWindowShape();
+
+  if (process.platform === 'win32' && typeof mainWindow.setAccentColor === 'function') {
+    mainWindow.setAccentColor(false);
+  }
+
+  mainWindow.once('ready-to-show', () => {
+    updateWindowShape();
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -229,6 +272,10 @@ function createWindow() {
   mainWindow.on('unmaximize', () => {
     updateWindowShape();
     mainWindow?.webContents.send('window:maximized-state-changed', false);
+  });
+
+  mainWindow.on('restore', () => {
+    updateWindowShape();
   });
 }
 
@@ -261,9 +308,19 @@ function registerGlobalShortcuts() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   app.setName(APP_NAME);
   app.setAppUserModelId('com.radiflow.player');
+
+  if (!startUrl && !isDev) {
+    try {
+      await startPackagedLocalServer();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      dialog.showErrorBox('RadiFlow Player startup failed', `Unable to start the packaged local service.\n\n${message}`);
+    }
+  }
+
   createWindow();
   createTray();
   registerGlobalShortcuts();
@@ -282,6 +339,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  packagedServer?.close();
   globalShortcut.unregisterAll();
 });
 

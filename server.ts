@@ -1,10 +1,10 @@
 import express from "express";
 import { createHash } from "crypto";
 import fs from "fs";
+import type { Server } from "http";
 import { parseFile } from "music-metadata";
 import path from "path";
 import { fileURLToPath } from "url";
-import { createServer as createViteServer } from "vite";
 import { gunzipSync, gzipSync } from "zlib";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -45,6 +45,21 @@ interface PersistedCoverBundle {
   folder: string;
   generatedAt: string;
   assets: Record<string, PersistedCoverAsset>;
+}
+
+interface StartServerOptions {
+  port?: number;
+  host?: string;
+  mode?: 'development' | 'production';
+  staticRoot?: string;
+  initialMusicDir?: string;
+}
+
+interface StartedServer {
+  port: number;
+  host: string;
+  url: string;
+  server: Server;
 }
 
 const getCacheKey = (filePath: string, stats: fs.Stats) => `${filePath}|${stats.mtimeMs}|${stats.size}`;
@@ -312,13 +327,19 @@ async function getLibraryPayload(musicDir: string, forceRefresh = false): Promis
   return persistLibraryCache(musicDir, songs);
 }
 
-async function startServer() {
+export async function startServer(options: StartServerOptions = {}): Promise<StartedServer> {
   const app = express();
   const portFromEnv = Number.parseInt(process.env.PORT ?? '3000', 10);
-  const PORT = Number.isFinite(portFromEnv) ? portFromEnv : 3000;
+  const requestedPort = typeof options.port === 'number' && Number.isFinite(options.port)
+    ? options.port
+    : portFromEnv;
+  const PORT = Number.isFinite(requestedPort) ? requestedPort : 3000;
+  const host = options.host ?? '0.0.0.0';
+  const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development');
+  const staticRoot = options.staticRoot ?? process.cwd();
 
   // Serve music directory
-  let musicDir = path.join(process.cwd(), 'music');
+  let musicDir = options.initialMusicDir ?? path.join(process.cwd(), 'music');
   let hasPrimedLibraryCache = false;
 
   if (!fs.existsSync(musicDir)) {
@@ -408,23 +429,45 @@ async function startServer() {
   });
 
   // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  if (mode !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(staticRoot, 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  return await new Promise((resolve, reject) => {
+    const server = app.listen(PORT, host, () => {
+      const address = server.address();
+      const resolvedPort = typeof address === 'object' && address ? address.port : PORT;
+      const resolvedUrlHost = host === '0.0.0.0' ? '127.0.0.1' : host;
+
+      console.log(`Server running on http://${resolvedUrlHost}:${resolvedPort}`);
+      resolve({
+        port: resolvedPort,
+        host,
+        url: `http://${resolvedUrlHost}:${resolvedPort}`,
+        server,
+      });
+    });
+
+    server.on('error', reject);
   });
 }
 
-startServer();
+const entryFilePath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+
+if (entryFilePath === __filename) {
+  startServer().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}
