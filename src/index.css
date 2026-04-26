@@ -38,15 +38,12 @@ body {
 
 [data-custom-background='true'] .customizable-backdrop-soft {
   backdrop-filter: blur(var(--rf-custom-blur-soft)) !important;
-  -webkit-backdrop-filter: blur(var(--rf-custom-blur-soft)) !important;
 }
 
 [data-custom-background='true'] .customizable-backdrop-medium {
   backdrop-filter: blur(var(--rf-custom-blur-medium)) !important;
-  -webkit-backdrop-filter: blur(var(--rf-custom-blur-medium)) !important;
 }
 
 [data-custom-background='true'] .customizable-backdrop-strong {
   backdrop-filter: blur(var(--rf-custom-blur-strong)) !important;
-  -webkit-backdrop-filter: blur(var(--rf-custom-blur-strong)) !important;
 }

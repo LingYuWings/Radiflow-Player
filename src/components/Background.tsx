@@ -8,7 +8,6 @@ interface BackgroundProps {
   effect: 'blur' | 'streamer';
   customBackground?: {
     imageSrc: string;
-    blurStrength?: number;
   } | null;
   transparentBackground?: boolean;
 }
@@ -94,7 +93,6 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
   const paletteRequestIdRef = useRef(0);
   const isUsingCustomBackground = Boolean(customBackground?.imageSrc);
   const shouldSkipBuiltInBackground = isUsingCustomBackground || transparentBackground;
-  const customBackgroundBlur = customBackground?.blurStrength ?? 0;
 
   useEffect(() => {
     if (shouldSkipBuiltInBackground || !imageSrc) {
@@ -175,8 +173,6 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
               className="absolute inset-[-4%] bg-cover bg-center opacity-88 transition-all duration-700"
               style={{
                 backgroundImage: `url(${customBackground?.imageSrc})`,
-                filter: `blur(${customBackgroundBlur}px)`,
-                transform: `scale(${1.04 + customBackgroundBlur / 480})`,
               }}
             />
           </motion.div>
