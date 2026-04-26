@@ -2,7 +2,7 @@
   "name": "radiflow-player",
   "productName": "RadiFlow Player",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "RadiFlow Player is a desktop music player with dynamic backgrounds, synced lyrics, playlists, and local library support.",
   "type": "module",
   "main": "main.js",

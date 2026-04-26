@@ -30,7 +30,7 @@ import {
 const ipc = (window as any).require ? (window as any).require('electron').ipcRenderer : null;
 
 const APP_NAME = 'RadiFlow Player';
-const APP_VERSION = '0.0.0';
+const APP_VERSION = '0.1.0';
 const PLAYLIST_STORAGE_KEY = 'apple-music-style-player.playlists';
 const PREFERENCES_STORAGE_KEY = 'apple-music-style-player.preferences';
 const PREFERENCES_STORAGE_VERSION = 3;
@@ -710,18 +710,28 @@ export default function App() {
   }, [hasLoadedPreferences, language, effect, backgroundSource, customBackgroundImage, customBackgroundBlur, transparentBackgroundBlur, volume, loopMode, isShuffle]);
 
   useEffect(() => {
-    if (!ipc) return;
+    if (!ipc || !hasLoadedPreferences) return;
 
     ipc.invoke('window:get-shell-state')
-      .then((result: { supported?: boolean; transparentWindow?: boolean } | null) => {
-        setSupportsTransparentBackground(Boolean(result?.supported));
-        setIsTransparentWindowModeEnabled(Boolean(result?.transparentWindow));
+      .then(async (result: { supported?: boolean; transparentWindow?: boolean } | null) => {
+        const supportsTransparentWindow = Boolean(result?.supported);
+        const isTransparentWindowEnabled = Boolean(result?.transparentWindow);
+        const shouldUseTransparentWindow = backgroundSource === 'transparent';
+
+        setSupportsTransparentBackground(supportsTransparentWindow);
+
+        if (isTransparentWindowEnabled !== shouldUseTransparentWindow) {
+          await ipc.invoke('window:restart-with-shell-mode', shouldUseTransparentWindow);
+          return;
+        }
+
+        setIsTransparentWindowModeEnabled(isTransparentWindowEnabled);
       })
       .catch(() => {
         setSupportsTransparentBackground(false);
         setIsTransparentWindowModeEnabled(false);
       });
-  }, []);
+  }, [backgroundSource, hasLoadedPreferences]);
 
   useEffect(() => {
     if (backgroundSource === 'transparent' && supportsTransparentBackground === false) {
@@ -1279,7 +1289,7 @@ export default function App() {
   return (
     <div
       className="relative h-screen w-screen overflow-hidden pt-14 text-white font-sans selection:bg-white/20"
-      data-custom-background={isPersonalizedBackgroundActive ? 'true' : 'false'}
+      data-custom-background={isCustomBackgroundActive ? 'true' : 'false'}
       style={appShellStyle}
     >
       <WindowChrome
@@ -1312,10 +1322,7 @@ export default function App() {
         imageSrc={song.cover}
         effect={effect}
         customBackground={backgroundSource === 'custom' && customBackgroundImage
-          ? {
-              imageSrc: customBackgroundImage,
-              blurStrength: customBackgroundBlur,
-            }
+          ? { imageSrc: customBackgroundImage }
           : null}
         transparentBackground={isTransparentBackgroundActive}
       />

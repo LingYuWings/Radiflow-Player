@@ -115,11 +115,24 @@ flowchart LR
 5. Electron 创建窗口并加载前端页面。
 6. React 启动后初始化媒体库、播放列表、偏好设置、播放会话。
 
-## 4.2 生产环境启动流程
+## 4.2 生产环境（打包）启动流程
 
-1. 执行 npm run build 生成 dist。
-2. Electron 加载 dist/index.html。
-3. server.ts 在生产环境下提供静态前端资源和 API。
+1. 执行 `npm run build`，Vite 生成 `dist/`（base: './' 相对路径），esbuild 生成 `dist-electron/server.js`。
+2. 执行 `npx electron-builder --win dir portable nsis`，产物在 `release/`。
+3. 打包应用启动时，Electron 主进程调用 `startPackagedLocalServer()`，把内嵌的 `dist-electron/server.js` 以子进程方式启动。
+4. Express 服务优先绑定稳定端口（见"端口稳定性"章节），产生 `http://127.0.0.1:PORT/`。
+5. 主进程窗口加载上述 URL，前端通过 `/api/*` 访问本地服务。
+
+### 端口稳定性设计
+
+`localStorage` 按 origin（协议 + 主机 + 端口）隔离。打包版若每次随机端口，则所有偏好设置（背景图、模糊值等）都无法跨启动持久化。
+
+`startPackagedLocalServer()` 的端口选择策略：
+
+1. 读取 `userData/server-port.json` 中上次成功绑定的端口，优先复用。
+2. 依次尝试固定端口段 37531–37550。
+3. 若全部被占用，回退到 `port: 0`（OS 随机分配）。
+4. 成功绑定后，把端口号写入 `userData/server-port.json`，供下次使用。
 
 ## 4.3 常用命令
 
@@ -130,6 +143,9 @@ npm run electron:dev
 npm run lint
 npm run build
 npm run preview
+
+# 打包
+npx electron-builder --win dir portable nsis
 ```
 
 ---
@@ -512,6 +528,16 @@ sequenceDiagram
 
 - 修改数据结构时，优先考虑 version 字段与向后兼容。
 - 更改歌曲 identity 规则时，需要同步检查播放列表恢复和会话恢复逻辑。
+- localStorage 由 origin 隔离。打包版 Express 必须绑定稳定端口（见 4.2 节），否则每次启动都是新 origin，所有设置全部丢失。
+
+### userData 目录（Electron 独占，仅打包版有效）
+
+Electron 的 `app.getPath('userData')` 路径用于跨重启的系统级持久化：
+
+| 文件 | 用途 |
+|---|---|
+| `shell-preferences.json` | 窗口壳层偏好（transparentWindow 布尔值） |
+| `server-port.json` | 上次成功绑定的 Express 端口号，确保 localStorage origin 跨启动一致 |
 
 ---
 
@@ -557,13 +583,25 @@ sequenceDiagram
 
 ### main.js 中的 IPC 通道
 
-- select-music-folder
-- get-music-folder
-- open-music-folder
-- window:minimize
-- window:toggle-maximize
-- window:close
-- window:is-maximized
+#### 窗口控制
+- `window:minimize` — 最小化窗口
+- `window:toggle-maximize` — 切换最大化
+- `window:close` — 关闭窗口
+- `window:is-maximized` — 返回最大化状态布尔值
+
+#### 窗口背景材质与壳层
+- `window:get-shell-state` — 返回 `{ supported, systemVersion, minimumVersion, transparentWindow }`
+- `window:restart-with-shell-mode(transparentWindow: boolean)` — 写入 shell 偏好后 `app.relaunch()`
+- `window:set-background-material(mode)` — 设置 Mica/Acrylic/none 背景材质（需 Windows 11 22H2+）
+
+#### 媒体库
+- `select-music-folder` — 打开目录选择对话框
+- `get-music-folder` — 返回当前媒体库目录
+- `open-music-folder` — 用文件管理器打开目录
+
+#### 其他
+- `app:open-external(url)` — 用默认浏览器打开外部链接
+- `window:flash-frame` — 窗口闪烁提示（托盘最小化时）
 
 ### 全局快捷键
 
@@ -575,6 +613,7 @@ sequenceDiagram
 
 - 所有窗口行为改动都要同时检查 WindowChrome.tsx。
 - 所有目录选择行为改动都要同时检查 useLibrary.ts 和 SettingsView.tsx。
+- `window:restart-with-shell-mode` 会调用 `app.relaunch() + app.exit(0)`，进程完全重启。重启后 Express 会优先复用 `server-port.json` 中的端口，保持 localStorage origin 不变。
 
 ---
 
@@ -856,3 +895,90 @@ Library.tsx 当前包含：
 - server.ts 接口结构变化
 - 新增持久化机制
 - 新增桌面窗口能力
+
+---
+
+## 19. 背景模糊系统说明
+
+### 设计语义
+
+自定义背景模式下，**背景图本身始终保持清晰，不应用任何 blur**。模糊滑条调整的是**前景面板和遮罩的 backdrop-filter 强度**。
+
+### 实现机制
+
+1. `App.tsx` 在 `isCustomBackgroundActive === true` 时，于根 div 的 `style` 上设置 CSS 变量：
+   - `--rf-custom-blur-soft`：`customBackgroundBlur * 0.55`px
+   - `--rf-custom-blur-medium`：`customBackgroundBlur * 0.78`px
+   - `--rf-custom-blur-strong`：`customBackgroundBlur`px
+
+2. 根 div 同时设置 `data-custom-background="true"`。
+
+3. `src/index.css` 中定义选择器：
+   ```css
+   [data-custom-background='true'] .customizable-backdrop-soft  { backdrop-filter: blur(var(--rf-custom-blur-soft)); }
+   [data-custom-background='true'] .customizable-backdrop-medium { backdrop-filter: blur(var(--rf-custom-blur-medium)); }
+   [data-custom-background='true'] .customizable-backdrop-strong { backdrop-filter: blur(var(--rf-custom-blur-strong)); }
+   ```
+
+4. 各前景面板组件（Sidebar、Library、Settings、WindowChrome 等）带有 `customizable-backdrop-*` 类，由此联动模糊强度。
+
+### 维护注意
+
+- **不要**把 `customBackgroundBlur` 传给 `Background.tsx` 或在背景图 div 上设置 `filter: blur(...)`，这是历史回归的根因。
+- `data-custom-background` 仅在 `backgroundSource === 'custom' && customBackgroundImage !== null` 时为 `'true'`，透明窗口模式不启用此逻辑。
+
+---
+
+## 20. 已知问题与修复记录
+
+### BUG-001：打包版黑屏（已修复）
+
+**版本影响**：0.0.x 早期打包版  
+**根因**：
+1. Vite 生产构建输出 `/assets/...` 绝对路径，`file://` 协议下脚本和样式加载失败。
+2. 打包版未启动本地 Express 服务，`/api/*` 接口全部 404。
+
+**修复**：
+- `vite.config.ts` 中将生产模式 `base` 改为 `'./'`（相对路径）。
+- 增加 `dist-electron/server.js`（esbuild 输出），在 `main.js` 的 `startPackagedLocalServer()` 中启动。
+- 窗口加载 `http://127.0.0.1:PORT/` 而非 `file://` 或 `dist/index.html`。
+
+---
+
+### BUG-002：打包版模糊滑条无效（已修复，v0.1.0）
+
+**版本影响**：v0.1.0 首版打包  
+**两个独立根因**，均已修复：
+
+#### 根因 A — LightningCSS 在生产构建中剔除 `backdrop-filter`
+
+`@tailwindcss/vite` 使用 LightningCSS 处理 CSS。当源文件同时存在 `backdrop-filter` 和 `-webkit-backdrop-filter` 时，LightningCSS 视两者等价并只保留 `-webkit-backdrop-filter`。  
+
+然而在 Chromium/Electron 中，两者是**独立的 CSS 属性**。Tailwind 的 `backdrop-blur-*` 工具类设置的是标准 `backdrop-filter`，`-webkit-backdrop-filter !important` 无法覆盖标准属性。结果：滑条值变化只影响 webkit 属性，视觉无变化。  
+
+**修复**（[src/index.css](src/index.css)）：  
+移除源文件中所有 `-webkit-backdrop-filter` 行，只保留 `backdrop-filter: blur(var(...)) !important`。  
+LightningCSS 处理后，会自动补回 `-webkit-` 前缀，同时保留标准属性——两者都出现在产物 CSS 中，`backdrop-filter !important` 正确覆盖 Tailwind 的固定值。
+
+#### 根因 B — `port: 0` 导致跨启动 localStorage 丢失
+
+`startPackagedLocalServer()` 使用 `port: 0`（OS 随机端口）。`localStorage` 按 origin 隔离，每次启动端口不同 → origin 不同 → 空 localStorage → `customBackgroundImage = null` → `isCustomBackgroundActive = false` → CSS 变量未设置。  
+
+**修复**（[main.js](main.js)）：  
+稳定端口策略：优先读 `userData/server-port.json`，再尝试 37531–37550，成功后写入端口号。
+
+**回归验证**：
+- 首次启动：端口绑定到 37531，写入 `server-port.json`。
+- 上传自定义背景 → 调整模糊 → 关闭重启 → 背景图和模糊值均恢复。
+- shell 模式切换重启后端口不变，localStorage 完整保留。
+- 模糊滑条实时调整有视觉效果（不再固定在 Tailwind 的默认值）。
+
+---
+
+### BUG-003：模糊作用于背景图本身（已修复，v0.1.0）
+
+**版本影响**：某次修复 BUG-001 时引入  
+**根因**：修复过程中误将 `blurStrength` prop 传入 `Background.tsx`，并在背景图 div 上应用了 `filter: blur(${n}px)`，导致背景图随滑条变模糊，偏离原始设计意图。
+
+**修复**（[src/components/Background.tsx](src/components/Background.tsx)）：  
+从 `BackgroundProps` 接口移除 `blurStrength`，删除背景图 div 上的 `filter` 和 `transform: scale(...)`。背景图 div 不再携带任何模糊 CSS。

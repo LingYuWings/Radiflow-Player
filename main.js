@@ -178,6 +178,30 @@ function updateWindowShape() {
   mainWindow.setShape(buildRoundedWindowShape(width, height, WINDOW_CORNER_RADIUS));
 }
 
+const PACKAGED_SERVER_HOST = '127.0.0.1';
+const PACKAGED_SERVER_PREFERRED_PORT = 37531;
+const PACKAGED_SERVER_PORT_RANGE = 20;
+const PACKAGED_SERVER_PORT_FILE = 'server-port.json';
+
+function readPackagedServerPort() {
+  try {
+    const raw = fs.readFileSync(path.join(app.getPath('userData'), PACKAGED_SERVER_PORT_FILE), 'utf8');
+    const value = JSON.parse(raw)?.port;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePackagedServerPort(port) {
+  try {
+    const filePath = path.join(app.getPath('userData'), PACKAGED_SERVER_PORT_FILE);
+    fs.writeFileSync(filePath, JSON.stringify({ port }));
+  } catch {
+    // Non-critical, ignore
+  }
+}
+
 async function startPackagedLocalServer() {
   if (packagedServerUrl) {
     return packagedServerUrl;
@@ -193,17 +217,42 @@ async function startPackagedLocalServer() {
     throw new Error('Packaged server entry does not export startServer().');
   }
 
-  const startedServer = await serverModule.startServer({
-    port: 0,
-    host: '127.0.0.1',
-    mode: 'production',
-    staticRoot: __dirname,
-    initialMusicDir: musicPath,
-  });
+  // Build candidate port list: try last-used port first, then preferred range, then random
+  const lastUsedPort = readPackagedServerPort();
+  const candidatePorts = [];
+  if (lastUsedPort && lastUsedPort !== PACKAGED_SERVER_PREFERRED_PORT) {
+    candidatePorts.push(lastUsedPort);
+  }
+  for (let i = 0; i < PACKAGED_SERVER_PORT_RANGE; i++) {
+    candidatePorts.push(PACKAGED_SERVER_PREFERRED_PORT + i);
+  }
+  candidatePorts.push(0); // Random fallback
 
-  packagedServer = startedServer.server;
-  packagedServerUrl = startedServer.url;
-  return packagedServerUrl;
+  let lastError;
+  for (const candidatePort of candidatePorts) {
+    try {
+      const startedServer = await serverModule.startServer({
+        port: candidatePort,
+        host: PACKAGED_SERVER_HOST,
+        mode: 'production',
+        staticRoot: __dirname,
+        initialMusicDir: musicPath,
+      });
+
+      packagedServer = startedServer.server;
+      packagedServerUrl = startedServer.url;
+      writePackagedServerPort(startedServer.port);
+      return packagedServerUrl;
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== 'EADDRINUSE') {
+        throw error;
+      }
+      // Port in use — try next candidate
+    }
+  }
+
+  throw lastError ?? new Error('Could not find an available port for the packaged server.');
 }
 
 function createWindow() {
