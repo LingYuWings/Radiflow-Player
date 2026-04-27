@@ -1,5 +1,5 @@
-import React from 'react';
-import { motion } from 'motion/react';
+import React, { useRef, useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Play, Pause, SkipBack, SkipForward, Music, Volume2, VolumeX } from 'lucide-react';
 
 interface MiniPlayerProps {
@@ -31,6 +31,45 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   onVolumeChange,
   emptyActionLabel,
 }) => {
+  const [showVolumePopover, setShowVolumePopover] = useState(false);
+  const volumeHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isDraggingVolume = useRef(false);
+
+  useEffect(() => () => {
+    if (volumeHideTimerRef.current) clearTimeout(volumeHideTimerRef.current);
+  }, []);
+
+  const openVolume = () => {
+    if (volumeHideTimerRef.current) clearTimeout(volumeHideTimerRef.current);
+    setShowVolumePopover(true);
+  };
+
+  const scheduleCloseVolume = () => {
+    volumeHideTimerRef.current = setTimeout(() => {
+      if (!isDraggingVolume.current) setShowVolumePopover(false);
+    }, 300);
+  };
+
+  const handleVolumeTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    isDraggingVolume.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    onVolumeChange(Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height)));
+  };
+
+  const handleVolumeTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingVolume.current) return;
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    onVolumeChange(Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height)));
+  };
+
+  const handleVolumeTrackPointerUp = () => {
+    isDraggingVolume.current = false;
+    scheduleCloseVolume();
+  };
+
   return (
     <motion.div
       initial={{ y: 100, opacity: 0 }}
@@ -82,23 +121,45 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
                 </button>
               </div>
 
-              <div className="hidden sm:flex items-center gap-2 group/vol">
-                <button 
-                  onClick={() => onVolumeChange(volume === 0 ? 0.8 : 0)}
-                  className="text-white/40 hover:text-white transition-colors"
+              <div className="hidden sm:flex items-center gap-2">
+                <div
+                  className="relative"
+                  onMouseEnter={openVolume}
+                  onMouseLeave={scheduleCloseVolume}
+                  onClick={e => e.stopPropagation()}
                 >
-                  {volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                </button>
-                <div className="w-0 group-hover/vol:w-20 overflow-hidden transition-all duration-300 flex items-center">
-                  <input 
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={volume}
-                    onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
-                    className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer accent-white"
-                  />
+                  <AnimatePresence>
+                    {showVolumePopover && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.92, y: 4 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.92, y: 4 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 flex flex-col items-center gap-1.5 px-3 pt-3 pb-2 rounded-xl bg-black/70 backdrop-blur-xl border border-white/10 shadow-xl z-10"
+                        onMouseEnter={openVolume}
+                        onMouseLeave={scheduleCloseVolume}
+                      >
+                        <span className="text-[9px] font-mono text-white/50 tabular-nums">{Math.round(volume * 100)}</span>
+                        <div
+                          className="relative w-1.5 h-20 bg-white/20 rounded-full cursor-pointer touch-none select-none"
+                          onPointerDown={handleVolumeTrackPointerDown}
+                          onPointerMove={handleVolumeTrackPointerMove}
+                          onPointerUp={handleVolumeTrackPointerUp}
+                        >
+                          <div
+                            className="absolute bottom-0 left-0 w-full rounded-full bg-white"
+                            style={{ height: `${volume * 100}%` }}
+                          />
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  <button
+                    onClick={() => onVolumeChange(volume === 0 ? 0.8 : 0)}
+                    className="p-2 text-white/40 hover:text-white transition-colors"
+                  >
+                    {volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                  </button>
                 </div>
               </div>
             </>

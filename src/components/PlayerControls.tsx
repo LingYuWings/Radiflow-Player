@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import { Play, Pause, SkipBack, SkipForward, Volume2, Music, ListMusic, Repeat, Repeat1, Shuffle, Mic2, ChevronDown } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
@@ -72,6 +72,47 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
 
   const progressWidth = duration > 0 ? `${(currentTime / duration) * 100}%` : '0%';
 
+  const isDraggingProgress = useRef(false);
+  const [progressDragging, setProgressDragging] = useState(false);
+  const isDraggingVolume = useRef(false);
+
+  const handleProgressPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (controlsDisabled) return;
+    isDraggingProgress.current = true;
+    setProgressDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    onSeek(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * duration);
+  };
+
+  const handleProgressPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingProgress.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    onSeek(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * duration);
+  };
+
+  const handleProgressPointerUp = () => {
+    isDraggingProgress.current = false;
+    setProgressDragging(false);
+  };
+
+  const handleVolumePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    isDraggingVolume.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    onVolumeChange(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)));
+  };
+
+  const handleVolumePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingVolume.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    onVolumeChange(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)));
+  };
+
+  const handleVolumePointerUp = () => {
+    isDraggingVolume.current = false;
+  };
+
   return (
     <div className="flex flex-col gap-6 w-full max-w-md">
       <div className="flex items-start justify-between overflow-hidden pl-4">
@@ -92,16 +133,15 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
       </div>
 
       <div className="flex flex-col gap-2">
-        <div className="relative h-1.5 w-full bg-white/10 rounded-full overflow-hidden cursor-pointer group"
-             onClick={(e) => {
-               if (controlsDisabled) return;
-               const rect = e.currentTarget.getBoundingClientRect();
-               const x = e.clientX - rect.left;
-               onSeek((x / rect.width) * duration);
-             }}>
-          <div 
-            className="absolute top-0 left-0 h-full bg-white transition-all duration-100"
-            style={{ width: progressWidth }}
+        <div
+          className="relative h-1.5 w-full bg-white/10 rounded-full overflow-hidden cursor-pointer group touch-none"
+          onPointerDown={handleProgressPointerDown}
+          onPointerMove={handleProgressPointerMove}
+          onPointerUp={handleProgressPointerUp}
+        >
+          <div
+            className="absolute top-0 left-0 h-full bg-white"
+            style={{ width: progressWidth, transition: progressDragging ? 'none' : 'width 100ms' }}
           />
         </div>
         <div className="flex justify-between text-[10px] font-mono text-white/40 uppercase tracking-widest">
@@ -183,14 +223,14 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
           <Volume2 size={12} />
           <span>Volume</span>
         </div>
-        <div className="relative h-1 w-full bg-white/10 rounded-full overflow-hidden cursor-pointer group"
-             onClick={(e) => {
-               const rect = e.currentTarget.getBoundingClientRect();
-               const x = e.clientX - rect.left;
-               onVolumeChange(Math.max(0, Math.min(1, x / rect.width)));
-             }}>
-          <div 
-            className="absolute top-0 left-0 h-full bg-white/60 transition-all duration-100"
+        <div
+          className="relative h-1 w-full bg-white/10 rounded-full overflow-hidden cursor-pointer group touch-none"
+          onPointerDown={handleVolumePointerDown}
+          onPointerMove={handleVolumePointerMove}
+          onPointerUp={handleVolumePointerUp}
+        >
+          <div
+            className="absolute top-0 left-0 h-full bg-white/60"
             style={{ width: `${volume * 100}%` }}
           />
         </div>
