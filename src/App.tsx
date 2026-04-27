@@ -30,7 +30,7 @@ import {
 const ipc = (window as any).require ? (window as any).require('electron').ipcRenderer : null;
 
 const APP_NAME = 'RadiFlow Player';
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.2';
 const PLAYLIST_STORAGE_KEY = 'apple-music-style-player.playlists';
 const PREFERENCES_STORAGE_KEY = 'apple-music-style-player.preferences';
 const PREFERENCES_STORAGE_VERSION = 3;
@@ -878,6 +878,11 @@ export default function App() {
       audioRef.current.volume = volume;
     }
   }, [volume]);
+
+  useEffect(() => {
+    if (!ipc) return;
+    ipc.send('media:update-playback-state', { isPlaying, hasActiveSong, currentTime, duration });
+  }, [isPlaying, hasActiveSong, currentTime, duration]);
 
   const playSongs = async (songsToPlay: Song[], index: number, sourcePlaylistId: string | null = null) => {
     if (index < 0 || index >= songsToPlay.length) return;

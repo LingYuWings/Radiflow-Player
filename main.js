@@ -48,6 +48,46 @@ const resolveAppIcon = () => {
 
 const appIcon = resolveAppIcon();
 
+// Taskbar thumbnail toolbar icons (20×20 white-on-transparent PNG, base64 encoded)
+const THUMBAR_ICON_PLAY   = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAASElEQVR4nO3OwQ0AIAgEQfpvGvVnDOjBET+6BUxW5DfSXjlYiupSOUijFkjBOzCFnsAwjIIwfP0QhhAwjHlgCvJACptBGnqjBvgKUrwixhObAAAAAElFTkSuQmCC';
+const THUMBAR_ICON_PAUSE  = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAHklEQVR4nGNgGAX/0QCp8qMGjho4auCogcQZOPwBAE+QvlDSK5bqAAAAAElFTkSuQmCC';
+const THUMBAR_ICON_PREV   = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAASklEQVR4nOXQQQoAIAhEUe9/aduGiM04RVB/rQ/R7O98itnZAkKzKOghCYxYG8ygNlhhNLjCKBDB7l545IcI2gIrWAIzVAbZ2ccbRwXyHOtSMyYAAAAASUVORK5CYII=';
+const THUMBAR_ICON_NEXT   = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAASklEQVR4nGNgGAX/gYBYdTBAlEKqG0hIIVkG4lNMtoG4NFFsILpGqhiIrJlqBhJy+cC6EJc6sgzEp44kA4lRR7SB1FBH/bw8/AEA5YzCTPEG4HoAAAAASUVORK5CYII=';
+
+function updateThumbarButtons(isPlaying, hasActiveSong) {
+  if (!mainWindow || process.platform !== 'win32') return;
+  const flags = hasActiveSong ? [] : ['disabled'];
+  mainWindow.setThumbarButtons([
+    {
+      tooltip: '上一曲',
+      icon: nativeImage.createFromBuffer(Buffer.from(THUMBAR_ICON_PREV, 'base64')),
+      click: () => mainWindow?.webContents.send('player-control', 'prev'),
+      flags,
+    },
+    {
+      tooltip: isPlaying ? '暂停' : '播放',
+      icon: nativeImage.createFromBuffer(Buffer.from(isPlaying ? THUMBAR_ICON_PAUSE : THUMBAR_ICON_PLAY, 'base64')),
+      click: () => mainWindow?.webContents.send('player-control', 'toggle-play'),
+      flags,
+    },
+    {
+      tooltip: '下一曲',
+      icon: nativeImage.createFromBuffer(Buffer.from(THUMBAR_ICON_NEXT, 'base64')),
+      click: () => mainWindow?.webContents.send('player-control', 'next'),
+      flags,
+    },
+  ]);
+}
+
+function updateTaskbarProgress(currentTime, duration) {
+  if (!mainWindow || process.platform !== 'win32') return;
+  if (!duration || duration <= 0) {
+    mainWindow.setProgressBar(-1);
+  } else {
+    mainWindow.setProgressBar(currentTime / duration);
+  }
+}
+
 if (customUserDataPath) {
   fs.mkdirSync(customUserDataPath, { recursive: true });
   app.setPath('userData', customUserDataPath);
@@ -303,6 +343,7 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     updateWindowShape();
+    updateThumbarButtons(false, false);
   });
 
   mainWindow.on('closed', () => {
@@ -465,4 +506,9 @@ ipcMain.handle('window:restart-with-shell-mode', async (event, transparentWindow
   app.relaunch();
   app.exit(0);
   return true;
+});
+
+ipcMain.on('media:update-playback-state', (_event, { isPlaying, hasActiveSong, currentTime, duration }) => {
+  updateThumbarButtons(isPlaying, hasActiveSong);
+  updateTaskbarProgress(currentTime, duration);
 });
