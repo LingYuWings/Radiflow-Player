@@ -116,12 +116,34 @@ export interface SettingsCopy {
 	tracksCount: (count: number) => string;
 }
 
+export interface EQCopy {
+	title: string;
+	subtitle: string;
+	playback: string;
+	enableEQ: string;
+	enableEQDescription: string;
+	enabledState: string;
+	disabledState: string;
+	reset: string;
+	resetDescription: string;
+	bands: string;
+	bandsDescription: string;
+	summary: string;
+	summaryDescription: string;
+	gainLabel: string;
+	gainUnit: string;
+	rangeLabel: string;
+	statusLabel: string;
+	previewHint: string;
+}
+
 export interface AppCopy {
 	common: CommonCopy;
 	sidebar: SidebarCopy;
 	playlist: PlaylistCopy;
 	library: LibraryCopy;
 	settings: SettingsCopy;
+	eq: EQCopy;
 }
 
 export const APP_COPY: Record<AppLanguage, AppCopy> = {
@@ -237,6 +259,26 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			libraryStats: '曲库数量',
 			tracksCount: (count) => `${count} 首歌曲`,
 		},
+		eq: {
+			title: '均衡器',
+			subtitle: '播放链路与频段增益控制',
+			playback: '播放处理',
+			enableEQ: '启用 EQ',
+			enableEQDescription: '在当前播放器的 Web Audio 链中启用多段均衡器处理。',
+			enabledState: '已启用',
+			disabledState: '已关闭',
+			reset: '重置频段',
+			resetDescription: '将所有频段恢复到 0 dB，不会影响当前音量。',
+			bands: '频段控制',
+			bandsDescription: '调节不同频率范围的增益，范围为 -12 dB 到 +12 dB。',
+			summary: '状态摘要',
+			summaryDescription: 'EQ 会直接作用于当前播放输出；切歌和暂停恢复后会保持设置。',
+			gainLabel: '增益',
+			gainUnit: 'dB',
+			rangeLabel: '范围',
+			statusLabel: '当前状态',
+			previewHint: '频谱可视化会反映 EQ 处理后的频率变化。',
+		},
 	},
 	'en-US': {
 		common: {
@@ -350,7 +392,28 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			libraryStats: 'Library Size',
 			tracksCount: (count) => `${count} tracks`,
 		},
+		eq: {
+			title: 'Equalizer',
+			subtitle: 'Playback processing and band gain control',
+			playback: 'Playback Processing',
+			enableEQ: 'Enable EQ',
+			enableEQDescription: 'Enable multi-band equalizer processing in the current Web Audio playback chain.',
+			enabledState: 'Enabled',
+			disabledState: 'Disabled',
+			reset: 'Reset Bands',
+			resetDescription: 'Restore every band to 0 dB without changing the master volume.',
+			bands: 'Band Controls',
+			bandsDescription: 'Adjust gain across different frequency ranges, from -12 dB to +12 dB.',
+			summary: 'Status Summary',
+			summaryDescription: 'EQ is applied directly to the active playback output and stays active across track changes and pause/resume.',
+			gainLabel: 'Gain',
+			gainUnit: 'dB',
+			rangeLabel: 'Range',
+			statusLabel: 'Current Status',
+			previewHint: 'The spectrum visualizer reflects the post-EQ frequency response.',
+		},
 	},
 };
 
 export const getSettingsCopy = (language: AppLanguage): SettingsCopy => APP_COPY[language].settings;
+export const getEQCopy = (language: AppLanguage): EQCopy => APP_COPY[language].eq;
