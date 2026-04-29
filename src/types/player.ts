@@ -29,7 +29,7 @@ export const EMPTY_SONG: Song = {
   lrc: '',
 };
 
-export type AppSection = LibrarySection | 'settings';
+export type AppSection = LibrarySection | 'settings' | 'eq';
 
 export interface StoredPlaylist {
   id: string;
@@ -47,6 +47,8 @@ export interface StoredPreferences {
   customBackgroundBlur?: number;
   transparentBackgroundBlur?: number;
   volume: number;
+  eqEnabled?: boolean;
+  eqGains?: number[];
   loopMode: LoopMode;
   isShuffle: boolean;
 }

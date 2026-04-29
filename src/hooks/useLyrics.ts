@@ -12,9 +12,10 @@ interface UseLyricsOptions {
   enabled: boolean;
   title: string;
   artist: string;
+  fileUrl?: string;
 }
 
-export function useLyrics({ enabled, title, artist }: UseLyricsOptions) {
+export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions) {
   const [lyrics, setLyrics] = useState<LyricLine[]>([]);
   const [isLoadingLyrics, setIsLoadingLyrics] = useState(false);
   const cacheRef = useRef(new Map<string, CachedLyricsPayload>());
@@ -28,12 +29,16 @@ export function useLyrics({ enabled, title, artist }: UseLyricsOptions) {
 
     const normalizedTitle = title.trim();
     const normalizedArtist = artist.trim();
+    const normalizedFileUrl = fileUrl?.trim() ?? '';
     if (!normalizedTitle || !normalizedArtist) {
+      setIsLoadingLyrics(false);
       setLyrics(parseLRC(EMPTY_LRC_TEXT));
       return;
     }
 
-    const cacheKey = `${normalizedTitle}::${normalizedArtist}`.toLowerCase();
+    const cacheKey = normalizedFileUrl
+      ? `file:${normalizedFileUrl}`
+      : `track:${normalizedTitle}::${normalizedArtist}`.toLowerCase();
     const cached = cacheRef.current.get(cacheKey);
     if (cached) {
       setLyrics(cached.lyrics);
@@ -47,23 +52,15 @@ export function useLyrics({ enabled, title, artist }: UseLyricsOptions) {
     const fetchLyrics = async () => {
       setIsLoadingLyrics(true);
       try {
-        const searchResponse = await fetch(`/api/proxy/search?word=${encodeURIComponent(`${normalizedTitle} ${normalizedArtist}`)}`, {
-          signal: controller.signal,
+        const searchParams = new URLSearchParams({
+          title: normalizedTitle,
+          artist: normalizedArtist,
         });
-        const searchData = await searchResponse.json();
-        const results = Array.isArray(searchData.data) ? searchData.data : searchData.data?.list;
-
-        if (searchData.code !== 200 || !results?.length) {
-          throw new Error('Song not found in search results');
+        if (normalizedFileUrl) {
+          searchParams.set('file', normalizedFileUrl);
         }
 
-        const firstSong = results[0];
-        const songId = firstSong.id || firstSong.songid || firstSong.songmid;
-        if (!songId) {
-          throw new Error('Could not find song ID');
-        }
-
-        const lyricResponse = await fetch(`/api/proxy/lyric?id=${songId}`, {
+        const lyricResponse = await fetch(`/api/lyrics?${searchParams.toString()}`, {
           signal: controller.signal,
         });
         const lyricData = await lyricResponse.json();
@@ -99,10 +96,6 @@ export function useLyrics({ enabled, title, artist }: UseLyricsOptions) {
 
         console.error('Failed to fetch lyrics:', error);
         const fallbackLyrics = parseLRC(EMPTY_LRC_TEXT);
-        cacheRef.current.set(cacheKey, {
-          rawText: EMPTY_LRC_TEXT,
-          lyrics: fallbackLyrics,
-        });
         setLyrics(fallbackLyrics);
       } finally {
         if (!isCancelled) {
@@ -117,7 +110,7 @@ export function useLyrics({ enabled, title, artist }: UseLyricsOptions) {
       isCancelled = true;
       controller.abort();
     };
-  }, [artist, enabled, title]);
+  }, [artist, enabled, fileUrl, title]);
 
   return { lyrics, isLoadingLyrics };
 }

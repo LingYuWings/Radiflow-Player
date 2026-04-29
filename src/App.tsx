@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Disc, ListMusic, Maximize2, Minimize2, Music, Pencil, Plus, Search, Settings2, Trash2, User } from 'lucide-react';
+import { Disc, ListMusic, Maximize2, Minimize2, Music, Pencil, Plus, Search, Settings2, SlidersHorizontal, Trash2, User } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Background } from './components/Background';
+import { EQView } from './components/EQView';
 import { Library, LibrarySection, PlaylistCollection } from './components/Library';
 import { useLibrary } from './hooks/useLibrary';
 import { useLyrics } from './hooks/useLyrics';
@@ -12,7 +13,7 @@ import { Playlist } from './components/Playlist';
 import { SettingsView } from './components/SettingsView';
 import { AppLogo } from './components/AppLogo';
 import { WindowChrome } from './components/WindowChrome';
-import { getSettingsCopy, AppLanguage } from './lib/copy';
+import { getEQCopy, getSettingsCopy, AppLanguage } from './lib/copy';
 import { cn } from './lib/utils';
 import {
   AppSection,
@@ -33,13 +34,32 @@ const APP_NAME = 'RadiFlow Player';
 const APP_VERSION = '0.1.2';
 const PLAYLIST_STORAGE_KEY = 'apple-music-style-player.playlists';
 const PREFERENCES_STORAGE_KEY = 'apple-music-style-player.preferences';
-const PREFERENCES_STORAGE_VERSION = 3;
+const PREFERENCES_STORAGE_VERSION = 4;
 const PLAYBACK_SESSION_STORAGE_KEY = 'apple-music-style-player.playback-session';
 const PLAYBACK_SESSION_STORAGE_VERSION = 1;
 const DEFAULT_CUSTOM_BACKGROUND_BLUR = 72;
 const DEFAULT_TRANSPARENT_BACKGROUND_BLUR = 72;
 const MAX_CUSTOM_BACKGROUND_DIMENSION = 1920;
 const CUSTOM_BACKGROUND_OUTPUT_QUALITY = 0.84;
+const EQ_BANDS = [
+  { frequency: 31, label: '31 Hz' },
+  { frequency: 62, label: '62 Hz' },
+  { frequency: 125, label: '125 Hz' },
+  { frequency: 250, label: '250 Hz' },
+  { frequency: 500, label: '500 Hz' },
+  { frequency: 1000, label: '1 kHz' },
+  { frequency: 2000, label: '2 kHz' },
+  { frequency: 4000, label: '4 kHz' },
+  { frequency: 8000, label: '8 kHz' },
+  { frequency: 16000, label: '16 kHz' },
+] as const;
+const DEFAULT_EQ_GAINS = EQ_BANDS.map(() => 0);
+const clampEQGain = (value: number) => Math.max(-12, Math.min(12, value));
+const sanitizeEQGains = (value: unknown) => EQ_BANDS.map((_, index) => {
+  const candidate = Array.isArray(value) ? value[index] : 0;
+  return typeof candidate === 'number' && Number.isFinite(candidate) ? clampEQGain(candidate) : 0;
+});
+const isOverlaySection = (section: AppSection): section is 'settings' | 'eq' => section === 'settings' || section === 'eq';
 
 const compressBackgroundImageFile = (file: File) => new Promise<string>((resolve, reject) => {
   if (!file.type.startsWith('image/')) {
@@ -118,10 +138,13 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [volume, setVolume] = useState(0.8);
+  const [eqEnabled, setEQEnabled] = useState(false);
+  const [eqGains, setEQGains] = useState<number[]>(DEFAULT_EQ_GAINS);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const eqFiltersRef = useRef<BiquadFilterNode[]>([]);
   const hasActiveSong = currentIndex >= 0 && playbackQueue.length > 0 && song.title !== EMPTY_SONG.title;
 
   const {
@@ -137,6 +160,7 @@ export default function App() {
     enabled: hasActiveSong,
     title: song.title,
     artist: song.artist,
+    fileUrl: typeof song.file === 'string' ? song.file : undefined,
   });
 
   const handleManualLibraryRefresh = () => {
@@ -156,6 +180,8 @@ export default function App() {
       customBackgroundBlur,
       transparentBackgroundBlur,
       volume,
+      eqEnabled,
+      eqGains,
       loopMode,
       isShuffle,
     };
@@ -196,6 +222,11 @@ export default function App() {
   } as React.CSSProperties) : undefined;
 
   const settingsCopy = useMemo(() => getSettingsCopy(language), [language]);
+  const eqCopy = useMemo(() => getEQCopy(language), [language]);
+  const eqBands = useMemo(() => EQ_BANDS.map((band, index) => ({
+    ...band,
+    gain: eqGains[index] ?? 0,
+  })), [eqGains]);
   const uiText = useMemo(() => {
     if (language === 'zh-CN') {
       return {
@@ -208,6 +239,7 @@ export default function App() {
         albums: '专辑',
         search: '搜索',
         settings: '设置',
+        eq: '均衡器',
         createPlaylist: '新建播放列表',
         playlistPrefix: '播放列表',
         songsCount: (count: number) => `${count} 首歌曲`,
@@ -240,6 +272,7 @@ export default function App() {
         addNoop: '这些歌曲已存在于目标播放列表',
         playlistDeletedFallback: '已删除的播放列表',
         openSettings: '打开设置',
+        openEQ: '打开均衡器',
         settingsTransparentUnsupported: '当前系统不支持系统级毛玻璃透明背景',
         transparentModeEnableTitle: '启用透明背景',
         transparentModeEnableDescription: '透明背景仍属于实验性功能。确认后应用会立即重新启动，并切换到透明窗口模式。',
@@ -260,6 +293,7 @@ export default function App() {
       albums: 'Albums',
       search: 'Search',
       settings: 'Settings',
+      eq: 'Equalizer',
       createPlaylist: 'New Playlist',
       playlistPrefix: 'Playlist',
       songsCount: (count: number) => `${count} track${count === 1 ? '' : 's'}`,
@@ -292,6 +326,7 @@ export default function App() {
       addNoop: 'Those tracks are already in the target playlist',
       playlistDeletedFallback: 'Deleted playlist',
       openSettings: 'Open Settings',
+      openEQ: 'Open Equalizer',
       settingsTransparentUnsupported: 'System glass transparency is not supported on this machine',
       transparentModeEnableTitle: 'Enable Transparent Background',
       transparentModeEnableDescription: 'Transparent background is still experimental. Confirming will restart the app immediately and switch to transparent window mode.',
@@ -354,6 +389,16 @@ export default function App() {
     setBackgroundSource(source);
   };
 
+  const handleEQGainChange = (bandIndex: number, gain: number) => {
+    setEQGains((current) => current.map((value, index) => (
+      index === bandIndex ? clampEQGain(gain) : value
+    )));
+  };
+
+  const handleEQReset = () => {
+    setEQGains([...DEFAULT_EQ_GAINS]);
+  };
+
   const savedPlaylists = useMemo(
     () => rebuildPlaylistCollections(playlistDefinitions, librarySongs),
     [playlistDefinitions, librarySongs]
@@ -413,12 +458,27 @@ export default function App() {
       const analyserNode = context.createAnalyser();
       analyserNode.fftSize = 256;
 
+      const eqFilters = EQ_BANDS.map(({ frequency }, index) => {
+        const filter = context.createBiquadFilter();
+        filter.type = 'peaking';
+        filter.frequency.value = frequency;
+        filter.Q.value = 1.1;
+        filter.gain.value = eqEnabled ? eqGains[index] ?? 0 : 0;
+        return filter;
+      });
+
       const source = context.createMediaElementSource(audioRef.current);
-      source.connect(analyserNode);
+      let previousNode: AudioNode = source;
+      eqFilters.forEach((filter) => {
+        previousNode.connect(filter);
+        previousNode = filter;
+      });
+      previousNode.connect(analyserNode);
       analyserNode.connect(context.destination);
 
       audioContextRef.current = context;
       sourceRef.current = source;
+      eqFiltersRef.current = eqFilters;
       setAnalyser(analyserNode);
     }
 
@@ -426,6 +486,19 @@ export default function App() {
       audioContextRef.current.resume();
     }
   };
+
+  useEffect(() => {
+    const context = audioContextRef.current;
+    const filters = eqFiltersRef.current;
+    if (!context || filters.length === 0) {
+      return;
+    }
+
+    filters.forEach((filter, index) => {
+      const nextGain = eqEnabled ? clampEQGain(eqGains[index] ?? 0) : 0;
+      filter.gain.setTargetAtTime(nextGain, context.currentTime, 0.015);
+    });
+  }, [eqEnabled, eqGains]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -592,7 +665,7 @@ export default function App() {
       if (!rawPreferences) return;
 
       const parsed = JSON.parse(rawPreferences) as Partial<StoredPreferences>;
-      if (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== PREFERENCES_STORAGE_VERSION) return;
+      if (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3 && parsed.version !== PREFERENCES_STORAGE_VERSION) return;
 
       if (parsed.language === 'zh-CN' || parsed.language === 'en-US') {
         setLanguage(parsed.language);
@@ -620,6 +693,14 @@ export default function App() {
 
       if (typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)) {
         setVolume(Math.min(1, Math.max(0, parsed.volume)));
+      }
+
+      if (typeof parsed.eqEnabled === 'boolean') {
+        setEQEnabled(parsed.eqEnabled);
+      }
+
+      if (Array.isArray(parsed.eqGains)) {
+        setEQGains(sanitizeEQGains(parsed.eqGains));
       }
 
       if (parsed.loopMode === 'none' || parsed.loopMode === 'all' || parsed.loopMode === 'one') {
@@ -702,12 +783,14 @@ export default function App() {
       customBackgroundBlur,
       transparentBackgroundBlur,
       volume,
+      eqEnabled,
+      eqGains,
       loopMode,
       isShuffle,
     };
 
     window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
-  }, [hasLoadedPreferences, language, effect, backgroundSource, customBackgroundImage, customBackgroundBlur, transparentBackgroundBlur, volume, loopMode, isShuffle]);
+  }, [hasLoadedPreferences, language, effect, backgroundSource, customBackgroundImage, customBackgroundBlur, transparentBackgroundBlur, volume, eqEnabled, eqGains, loopMode, isShuffle]);
 
   useEffect(() => {
     if (!ipc || !hasLoadedPreferences) return;
@@ -1240,13 +1323,17 @@ export default function App() {
     setLastLibrarySection('playlists');
   };
 
-  const toggleSettings = () => {
-    if (currentSection === 'settings') {
+  const toggleOverlaySection = (section: 'settings' | 'eq') => {
+    if (currentSection === section) {
       setCurrentSection(lastLibrarySection);
-    } else {
-      setLastLibrarySection(currentSection as LibrarySection);
-      setCurrentSection('settings');
+      return;
     }
+
+    if (!isOverlaySection(currentSection)) {
+      setLastLibrarySection(currentSection);
+    }
+
+    setCurrentSection(section);
   };
 
   const handleWindowMinimize = () => {
@@ -1275,7 +1362,8 @@ export default function App() {
   };
 
   const isShowingPlaylistOverview = currentSection === 'playlists' && !displayedPlaylist;
-  const activeLibrarySection = currentSection === 'settings' ? lastLibrarySection : currentSection;
+  const overlaySection = isOverlaySection(currentSection) ? currentSection : null;
+  const activeLibrarySection = overlaySection ? lastLibrarySection : currentSection;
 
   const sidebarItems: Array<{ id: LibrarySection; label: string; icon: React.ReactNode }> = [
     { id: 'playlists', label: uiText.playlists, icon: <ListMusic size={18} /> },
@@ -1287,6 +1375,8 @@ export default function App() {
 
   const currentWindowSubtitle = currentSection === 'settings'
     ? uiText.settings
+    : currentSection === 'eq'
+      ? uiText.eq
     : view === 'player'
       ? (hasActiveSong ? `${uiText.nowPlaying} · ${song.title}` : uiText.noPlaybackTitle)
       : sidebarItems.find((item) => item.id === activeLibrarySection)?.label || uiText.brandSubtitle;
@@ -1301,20 +1391,37 @@ export default function App() {
         appName={APP_NAME}
         subtitle={currentWindowSubtitle}
         actionSlot={(
-          <button
-            type="button"
-            onClick={toggleSettings}
-            className={cn(
-              'h-9 rounded-xl border px-4 text-sm font-semibold flex items-center gap-2 transition-all',
-              currentSection === 'settings'
-                ? 'bg-white text-black border-white shadow-lg'
-                : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10 hover:text-white'
-            )}
-            title={uiText.openSettings}
-          >
-            <Settings2 size={16} />
-            <span className="hidden sm:inline">{uiText.settings}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => toggleOverlaySection('eq')}
+              className={cn(
+                'h-9 rounded-xl border px-4 text-sm font-semibold flex items-center gap-2 transition-all',
+                currentSection === 'eq'
+                  ? 'bg-white text-black border-white shadow-lg'
+                  : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10 hover:text-white'
+              )}
+              title={uiText.openEQ}
+            >
+              <SlidersHorizontal size={16} />
+              <span className="hidden sm:inline">{uiText.eq}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => toggleOverlaySection('settings')}
+              className={cn(
+                'h-9 rounded-xl border px-4 text-sm font-semibold flex items-center gap-2 transition-all',
+                currentSection === 'settings'
+                  ? 'bg-white text-black border-white shadow-lg'
+                  : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10 hover:text-white'
+              )}
+              title={uiText.openSettings}
+            >
+              <Settings2 size={16} />
+              <span className="hidden sm:inline">{uiText.settings}</span>
+            </button>
+          </div>
         )}
         showWindowControls={!!ipc}
         isWindowMaximized={isWindowMaximized}
@@ -1357,7 +1464,7 @@ export default function App() {
 
                 <div className="p-4 border-b border-white/10 space-y-2">
                   {sidebarItems.map((item) => {
-                    const isActive = activeLibrarySection === item.id && currentSection !== 'settings';
+                    const isActive = activeLibrarySection === item.id && !overlaySection;
                     return (
                       <button
                         key={item.id}
@@ -1657,41 +1764,53 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {currentSection === 'settings' && (
+      <AnimatePresence mode="wait">
+        {overlaySection && (
           <motion.div
+            key={overlaySection}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             className="absolute inset-x-0 top-14 bottom-0 z-105 p-4 md:p-6"
           >
             <div className="h-full rounded-4xl border border-white/10 bg-black/45 backdrop-blur-3xl customizable-backdrop-strong shadow-2xl overflow-hidden">
-              <SettingsView
-                copy={settingsCopy}
-                language={language}
-                onLanguageChange={setLanguage}
-                currentFolder={musicFolder}
-                isElectron={!!ipc}
-                onSelectFolder={selectFolder}
-                onOpenFolder={openFolder}
-                onRefreshLibrary={handleManualLibraryRefresh}
-                isRefreshingLibrary={isLoadingLibrary}
-                effect={effect}
-                backgroundSource={backgroundSource}
-                hasCustomBackground={Boolean(customBackgroundImage)}
-                customBackgroundBlur={customBackgroundBlur}
-                transparentBackgroundBlur={transparentBackgroundBlur}
-                supportsTransparentBackground={supportsTransparentBackground !== false}
-                onEffectChange={setEffect}
-                onBackgroundSourceChange={handleBackgroundSourceChange}
-                onSelectCustomBackground={handleSelectCustomBackground}
-                onRemoveCustomBackground={handleRemoveCustomBackground}
-                onCustomBackgroundBlurChange={setCustomBackgroundBlur}
-                onTransparentBackgroundBlurChange={setTransparentBackgroundBlur}
-                libraryCount={librarySongs.length}
-                appName={APP_NAME}
-                appVersion={APP_VERSION}
-              />
+              {overlaySection === 'settings' ? (
+                <SettingsView
+                  copy={settingsCopy}
+                  language={language}
+                  onLanguageChange={setLanguage}
+                  currentFolder={musicFolder}
+                  isElectron={!!ipc}
+                  onSelectFolder={selectFolder}
+                  onOpenFolder={openFolder}
+                  onRefreshLibrary={handleManualLibraryRefresh}
+                  isRefreshingLibrary={isLoadingLibrary}
+                  effect={effect}
+                  backgroundSource={backgroundSource}
+                  hasCustomBackground={Boolean(customBackgroundImage)}
+                  customBackgroundBlur={customBackgroundBlur}
+                  transparentBackgroundBlur={transparentBackgroundBlur}
+                  supportsTransparentBackground={supportsTransparentBackground !== false}
+                  onEffectChange={setEffect}
+                  onBackgroundSourceChange={handleBackgroundSourceChange}
+                  onSelectCustomBackground={handleSelectCustomBackground}
+                  onRemoveCustomBackground={handleRemoveCustomBackground}
+                  onCustomBackgroundBlurChange={setCustomBackgroundBlur}
+                  onTransparentBackgroundBlurChange={setTransparentBackgroundBlur}
+                  libraryCount={librarySongs.length}
+                  appName={APP_NAME}
+                  appVersion={APP_VERSION}
+                />
+              ) : (
+                <EQView
+                  copy={eqCopy}
+                  enabled={eqEnabled}
+                  bands={eqBands}
+                  onToggleEnabled={setEQEnabled}
+                  onBandGainChange={handleEQGainChange}
+                  onReset={handleEQReset}
+                />
+              )}
             </div>
           </motion.div>
         )}

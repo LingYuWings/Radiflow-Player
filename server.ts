@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import fs from "fs";
 import type { Server } from "http";
 import { parseFile } from "music-metadata";
+import { DatabaseSync } from "node:sqlite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { gunzipSync, gzipSync } from "zlib";
@@ -17,6 +18,11 @@ const LIBRARY_CACHE_FILE_NAME = 'library-cache.json';
 const LIBRARY_CACHE_COVER_BUNDLE_FILE_NAME = 'cover-cache.json.gz';
 const LEGACY_LIBRARY_CACHE_IMAGE_DIRECTORY_NAME = 'image';
 const LIBRARY_CACHE_VERSION = 1;
+const LYRIC_CACHE_DIRECTORY_NAME = 'lyric';
+const LYRIC_CACHE_INDEX_FILE_NAME = 'index.json';
+const LYRIC_CACHE_VERSION = 1;
+const LYRIC_CACHE_DB_FILE_NAME = 'lyrics.db';
+const MANUAL_LYRIC_EXTENSIONS = new Set(['.lrc', '.yrc', '.txt']);
 
 interface LibrarySongPayload {
   filename: string;
@@ -47,6 +53,49 @@ interface PersistedCoverBundle {
   assets: Record<string, PersistedCoverAsset>;
 }
 
+interface PersistedLyricData {
+  lrc?: string;
+  lyric?: string;
+  tlyric?: string;
+  trans?: string;
+  yrc?: string;
+}
+
+interface PersistedLyricFile {
+  version: number;
+  title: string;
+  artist: string;
+  songId: string | null;
+  savedAt: string;
+  data: PersistedLyricData;
+}
+
+interface PersistedLyricIndexEntry {
+  cacheFile: string;
+  title: string;
+  artist: string;
+  savedAt: string;
+}
+
+interface PersistedLyricIndex {
+  version: number;
+  folder: string;
+  generatedAt: string;
+  entries: Record<string, PersistedLyricIndexEntry>;
+}
+
+interface PersistedLyricDatabaseRow {
+  title: string;
+  artist: string;
+  song_id: string | null;
+  lrc: string | null;
+  lyric: string | null;
+  tlyric: string | null;
+  trans: string | null;
+  yrc: string | null;
+  saved_at: string;
+}
+
 interface StartServerOptions {
   port?: number;
   host?: string;
@@ -62,14 +111,427 @@ interface StartedServer {
   server: Server;
 }
 
+let lyricDatabaseState: { musicDir: string; database: DatabaseSync } | null = null;
+
 const getCacheKey = (filePath: string, stats: fs.Stats) => `${filePath}|${stats.mtimeMs}|${stats.size}`;
 const getLibraryCacheDirectory = (musicDir: string) => path.join(musicDir, LIBRARY_CACHE_DIRECTORY_NAME);
 const getLibraryCacheFilePath = (musicDir: string) => path.join(getLibraryCacheDirectory(musicDir), LIBRARY_CACHE_FILE_NAME);
 const getLibraryCoverBundleFilePath = (musicDir: string) => path.join(getLibraryCacheDirectory(musicDir), LIBRARY_CACHE_COVER_BUNDLE_FILE_NAME);
+const getLyricCacheDirectory = (musicDir: string) => path.join(musicDir, LYRIC_CACHE_DIRECTORY_NAME);
+const getLyricCacheIndexFilePath = (musicDir: string) => path.join(getLyricCacheDirectory(musicDir), LYRIC_CACHE_INDEX_FILE_NAME);
+const getLyricCacheDatabaseFilePath = (musicDir: string) => path.join(getLyricCacheDirectory(musicDir), LYRIC_CACHE_DB_FILE_NAME);
 const isRefreshRequested = (value: unknown) => value === '1' || value === 'true';
 
 const ensureDirectory = (directoryPath: string) => {
   fs.mkdirSync(directoryPath, { recursive: true });
+};
+
+const normalizeLyricLookupPart = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
+
+const resolveLyricFileNameFromUrl = (fileUrl?: string) => {
+  if (!fileUrl || !fileUrl.startsWith('/music/')) {
+    return null;
+  }
+
+  try {
+    return decodeURIComponent(fileUrl.slice('/music/'.length));
+  } catch {
+    return null;
+  }
+};
+
+const getLyricAssociationKeys = ({
+  title,
+  artist,
+  fileUrl,
+}: {
+  title: string;
+  artist: string;
+  fileUrl?: string;
+}) => {
+  const keys = new Set<string>();
+  const normalizedTitle = normalizeLyricLookupPart(title);
+  const normalizedArtist = normalizeLyricLookupPart(artist);
+  const fileName = resolveLyricFileNameFromUrl(fileUrl);
+
+  if (normalizedTitle && normalizedArtist) {
+    keys.add(`track:${normalizedTitle}::${normalizedArtist}`);
+  }
+
+  if (fileName) {
+    keys.add(`file:${fileName.toLowerCase()}`);
+  }
+
+  return Array.from(keys);
+};
+
+const sanitizeLyricPayload = (value: unknown): PersistedLyricData => {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const payload: PersistedLyricData = {};
+
+  if (typeof candidate.lrc === 'string') {
+    payload.lrc = candidate.lrc;
+  }
+
+  if (typeof candidate.lyric === 'string') {
+    payload.lyric = candidate.lyric;
+  }
+
+  if (typeof candidate.tlyric === 'string') {
+    payload.tlyric = candidate.tlyric;
+  }
+
+  if (typeof candidate.trans === 'string') {
+    payload.trans = candidate.trans;
+  }
+
+  if (typeof candidate.yrc === 'string') {
+    payload.yrc = candidate.yrc;
+  }
+
+  return payload;
+};
+
+const hasUsableLyrics = (payload: PersistedLyricData) => Boolean(
+  payload.yrc?.trim() || payload.lrc?.trim() || payload.lyric?.trim()
+);
+
+const getManualLyricPayload = (musicDir: string, fileUrl?: string): PersistedLyricData | null => {
+  const musicFileName = resolveLyricFileNameFromUrl(fileUrl);
+  if (!musicFileName) {
+    return null;
+  }
+
+  const lyricDirectory = getLyricCacheDirectory(musicDir);
+  if (!fs.existsSync(lyricDirectory)) {
+    return null;
+  }
+
+  const expectedBaseName = path.parse(musicFileName).name.toLowerCase();
+  const matchedLyricFile = fs.readdirSync(lyricDirectory).find((entry) => {
+    const parsedEntry = path.parse(entry);
+    return parsedEntry.name.toLowerCase() === expectedBaseName
+      && MANUAL_LYRIC_EXTENSIONS.has(parsedEntry.ext.toLowerCase());
+  });
+
+  if (!matchedLyricFile) {
+    return null;
+  }
+
+  try {
+    const lyricFilePath = path.join(lyricDirectory, matchedLyricFile);
+    const lyricText = fs.readFileSync(lyricFilePath, 'utf8').trim();
+    if (!lyricText) {
+      return null;
+    }
+
+    return path.extname(matchedLyricFile).toLowerCase() === '.yrc'
+      ? { yrc: lyricText }
+      : { lrc: lyricText };
+  } catch {
+    return null;
+  }
+};
+
+const getLyricDatabase = (musicDir: string) => {
+  if (lyricDatabaseState?.musicDir === musicDir) {
+    return lyricDatabaseState.database;
+  }
+
+  if (lyricDatabaseState) {
+    lyricDatabaseState.database.close();
+    lyricDatabaseState = null;
+  }
+
+  ensureDirectory(getLyricCacheDirectory(musicDir));
+
+  const database = new DatabaseSync(getLyricCacheDatabaseFilePath(musicDir));
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS lyric_cache (
+      association_key TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      artist TEXT NOT NULL,
+      file_name TEXT,
+      song_id TEXT,
+      lrc TEXT,
+      lyric TEXT,
+      tlyric TEXT,
+      trans TEXT,
+      yrc TEXT,
+      saved_at TEXT NOT NULL
+    );
+  `);
+
+  lyricDatabaseState = { musicDir, database };
+  return database;
+};
+
+const getLyricCacheFileName = (title: string, artist: string, songId?: string | null) => {
+  const digest = createHash('sha1')
+    .update(normalizeLyricLookupPart(title))
+    .update('::')
+    .update(normalizeLyricLookupPart(artist))
+    .update('::')
+    .update(songId ?? '')
+    .digest('hex');
+
+  return `${digest}.json`;
+};
+
+const readPersistedLyricIndex = (musicDir: string): PersistedLyricIndex | null => {
+  try {
+    const indexFilePath = getLyricCacheIndexFilePath(musicDir);
+    if (!fs.existsSync(indexFilePath)) {
+      return null;
+    }
+
+    const rawIndex = fs.readFileSync(indexFilePath, 'utf8');
+    const parsedIndex = JSON.parse(rawIndex) as Partial<PersistedLyricIndex>;
+
+    if (parsedIndex.version !== LYRIC_CACHE_VERSION || parsedIndex.folder !== musicDir || !parsedIndex.entries || typeof parsedIndex.entries !== 'object') {
+      return null;
+    }
+
+    return {
+      version: LYRIC_CACHE_VERSION,
+      folder: musicDir,
+      generatedAt: typeof parsedIndex.generatedAt === 'string' ? parsedIndex.generatedAt : new Date(0).toISOString(),
+      entries: parsedIndex.entries as Record<string, PersistedLyricIndexEntry>,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const persistLyricIndex = (musicDir: string, entries: Record<string, PersistedLyricIndexEntry>) => {
+  ensureDirectory(getLyricCacheDirectory(musicDir));
+
+  const payload: PersistedLyricIndex = {
+    version: LYRIC_CACHE_VERSION,
+    folder: musicDir,
+    generatedAt: new Date().toISOString(),
+    entries,
+  };
+
+  const indexFilePath = getLyricCacheIndexFilePath(musicDir);
+  const tempIndexFilePath = `${indexFilePath}.tmp`;
+  fs.writeFileSync(tempIndexFilePath, JSON.stringify(payload), 'utf8');
+  fs.renameSync(tempIndexFilePath, indexFilePath);
+
+  return payload;
+};
+
+const readPersistedLyricFile = (musicDir: string, cacheFile: string): PersistedLyricFile | null => {
+  try {
+    const lyricFilePath = path.join(getLyricCacheDirectory(musicDir), cacheFile);
+    if (!fs.existsSync(lyricFilePath)) {
+      return null;
+    }
+
+    const rawPayload = fs.readFileSync(lyricFilePath, 'utf8');
+    const parsedPayload = JSON.parse(rawPayload) as Partial<PersistedLyricFile>;
+    const lyricData = sanitizeLyricPayload(parsedPayload.data);
+
+    if (parsedPayload.version !== LYRIC_CACHE_VERSION || !hasUsableLyrics(lyricData)) {
+      return null;
+    }
+
+    return {
+      version: LYRIC_CACHE_VERSION,
+      title: typeof parsedPayload.title === 'string' ? parsedPayload.title : '',
+      artist: typeof parsedPayload.artist === 'string' ? parsedPayload.artist : '',
+      songId: typeof parsedPayload.songId === 'string' ? parsedPayload.songId : null,
+      savedAt: typeof parsedPayload.savedAt === 'string' ? parsedPayload.savedAt : new Date(0).toISOString(),
+      data: lyricData,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const getPersistedLyricPayload = (
+  musicDir: string,
+  association: { title: string; artist: string; fileUrl?: string },
+) => {
+  const lyricIndex = readPersistedLyricIndex(musicDir);
+  if (!lyricIndex) {
+    return null;
+  }
+
+  for (const key of getLyricAssociationKeys(association)) {
+    const entry = lyricIndex.entries[key];
+    if (!entry) {
+      continue;
+    }
+
+    const payload = readPersistedLyricFile(musicDir, entry.cacheFile);
+    if (payload) {
+      return payload;
+    }
+  }
+
+  return null;
+};
+
+const persistLyricPayload = (
+  musicDir: string,
+  association: { title: string; artist: string; fileUrl?: string },
+  payloadData: PersistedLyricData,
+  songId?: string | null,
+) => {
+  ensureDirectory(getLyricCacheDirectory(musicDir));
+
+  const cacheFile = getLyricCacheFileName(association.title, association.artist, songId);
+  const payload: PersistedLyricFile = {
+    version: LYRIC_CACHE_VERSION,
+    title: association.title,
+    artist: association.artist,
+    songId: songId ?? null,
+    savedAt: new Date().toISOString(),
+    data: payloadData,
+  };
+
+  const lyricFilePath = path.join(getLyricCacheDirectory(musicDir), cacheFile);
+  const tempLyricFilePath = `${lyricFilePath}.tmp`;
+  fs.writeFileSync(tempLyricFilePath, JSON.stringify(payload), 'utf8');
+  fs.renameSync(tempLyricFilePath, lyricFilePath);
+
+  const existingIndex = readPersistedLyricIndex(musicDir);
+  const nextEntries: Record<string, PersistedLyricIndexEntry> = {
+    ...(existingIndex?.entries ?? {}),
+  };
+
+  for (const key of getLyricAssociationKeys(association)) {
+    nextEntries[key] = {
+      cacheFile,
+      title: association.title,
+      artist: association.artist,
+      savedAt: payload.savedAt,
+    };
+  }
+
+  persistLyricIndex(musicDir, nextEntries);
+  return payload;
+};
+
+const getPersistedLyricPayloadFromDatabase = (
+  musicDir: string,
+  association: { title: string; artist: string; fileUrl?: string },
+) => {
+  const database = getLyricDatabase(musicDir);
+  const statement = database.prepare(`
+    SELECT title, artist, song_id, lrc, lyric, tlyric, trans, yrc, saved_at
+    FROM lyric_cache
+    WHERE association_key = ?
+    LIMIT 1
+  `);
+
+  for (const key of getLyricAssociationKeys(association)) {
+    const row = statement.get(key) as PersistedLyricDatabaseRow | undefined;
+    if (!row) {
+      continue;
+    }
+
+    const lyricData = sanitizeLyricPayload(row);
+    if (!hasUsableLyrics(lyricData)) {
+      continue;
+    }
+
+    return {
+      version: LYRIC_CACHE_VERSION,
+      title: row.title,
+      artist: row.artist,
+      songId: row.song_id,
+      savedAt: row.saved_at,
+      data: lyricData,
+    } satisfies PersistedLyricFile;
+  }
+
+  return null;
+};
+
+const persistLyricPayloadToDatabase = (
+  musicDir: string,
+  association: { title: string; artist: string; fileUrl?: string },
+  payloadData: PersistedLyricData,
+  songId?: string | null,
+) => {
+  const database = getLyricDatabase(musicDir);
+  const fileName = resolveLyricFileNameFromUrl(association.fileUrl);
+  const savedAt = new Date().toISOString();
+  const statement = database.prepare(`
+    INSERT INTO lyric_cache (
+      association_key,
+      title,
+      artist,
+      file_name,
+      song_id,
+      lrc,
+      lyric,
+      tlyric,
+      trans,
+      yrc,
+      saved_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(association_key) DO UPDATE SET
+      title = excluded.title,
+      artist = excluded.artist,
+      file_name = excluded.file_name,
+      song_id = excluded.song_id,
+      lrc = excluded.lrc,
+      lyric = excluded.lyric,
+      tlyric = excluded.tlyric,
+      trans = excluded.trans,
+      yrc = excluded.yrc,
+      saved_at = excluded.saved_at
+  `);
+
+  for (const key of getLyricAssociationKeys(association)) {
+    statement.run(
+      key,
+      association.title,
+      association.artist,
+      fileName ?? null,
+      songId ?? null,
+      payloadData.lrc ?? null,
+      payloadData.lyric ?? null,
+      payloadData.tlyric ?? null,
+      payloadData.trans ?? null,
+      payloadData.yrc ?? null,
+      savedAt,
+    );
+  }
+
+  return {
+    version: LYRIC_CACHE_VERSION,
+    title: association.title,
+    artist: association.artist,
+    songId: songId ?? null,
+    savedAt,
+    data: payloadData,
+  } satisfies PersistedLyricFile;
+};
+
+const getStoredLyricPayload = (
+  musicDir: string,
+  association: { title: string; artist: string; fileUrl?: string },
+) => {
+  const databasePayload = getPersistedLyricPayloadFromDatabase(musicDir, association);
+  if (databasePayload) {
+    return databasePayload;
+  }
+
+  const legacyPayload = getPersistedLyricPayload(musicDir, association);
+  if (!legacyPayload) {
+    return null;
+  }
+
+  persistLyricPayloadToDatabase(musicDir, association, legacyPayload.data, legacyPayload.songId);
+  return legacyPayload;
 };
 
 const getCoverFileExtension = (mimeType?: string) => {
@@ -403,6 +865,102 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     res.type(coverAsset.mimeType);
     res.send(Buffer.from(coverAsset.data, 'base64'));
+  });
+
+  app.get('/api/lyrics', async (req, res) => {
+    const title = typeof req.query.title === 'string' ? req.query.title.trim() : '';
+    const artist = typeof req.query.artist === 'string' ? req.query.artist.trim() : '';
+    const fileUrl = typeof req.query.file === 'string' ? req.query.file : undefined;
+    const manualLyricPayload = getManualLyricPayload(musicDir, fileUrl);
+
+    if (!title || !artist) {
+      res.status(400).json({ code: 400, error: 'Missing title or artist' });
+      return;
+    }
+
+    const cachedPayload = getStoredLyricPayload(musicDir, { title, artist, fileUrl });
+    if (cachedPayload) {
+      res.json({
+        code: 200,
+        data: cachedPayload.data,
+        source: 'local',
+      });
+      return;
+    }
+
+    try {
+      const searchResponse = await fetch(`https://api.vkeys.cn/v2/music/tencent/search/song?word=${encodeURIComponent(`${title} ${artist}`)}`);
+      const searchData = await searchResponse.json() as {
+        code?: number;
+        data?: unknown[] | { list?: unknown[] };
+      };
+      const results = Array.isArray(searchData.data)
+        ? searchData.data
+        : Array.isArray(searchData.data?.list)
+          ? searchData.data.list
+          : [];
+
+      if (searchData.code !== 200 || results.length === 0) {
+        if (manualLyricPayload) {
+          res.json({
+            code: 200,
+            data: manualLyricPayload,
+            source: 'manual',
+          });
+          return;
+        }
+
+        res.status(404).json({ code: 404, error: 'Song not found in search results' });
+        return;
+      }
+
+      const firstSong = results[0] as Record<string, unknown>;
+      const songId = firstSong.id ?? firstSong.songid ?? firstSong.songmid;
+      if (typeof songId !== 'string' && typeof songId !== 'number') {
+        res.status(404).json({ code: 404, error: 'Could not find song ID' });
+        return;
+      }
+
+      const lyricResponse = await fetch(`https://api.vkeys.cn/v2/music/tencent/lyric?id=${songId}`);
+      const lyricResponseData = await lyricResponse.json() as {
+        code?: number;
+        data?: unknown;
+      };
+      const lyricPayload = sanitizeLyricPayload(lyricResponseData.data);
+
+      if (lyricResponseData.code !== 200 || !hasUsableLyrics(lyricPayload)) {
+        if (manualLyricPayload) {
+          res.json({
+            code: 200,
+            data: manualLyricPayload,
+            source: 'manual',
+          });
+          return;
+        }
+
+        res.status(404).json({ code: 404, error: 'Lyrics not found in API response' });
+        return;
+      }
+
+      persistLyricPayloadToDatabase(musicDir, { title, artist, fileUrl }, lyricPayload, String(songId));
+
+      res.json({
+        code: 200,
+        data: lyricPayload,
+        source: 'remote',
+      });
+    } catch {
+      if (manualLyricPayload) {
+        res.json({
+          code: 200,
+          data: manualLyricPayload,
+          source: 'manual',
+        });
+        return;
+      }
+
+      res.status(500).json({ code: 500, error: 'Failed to fetch lyrics' });
+    }
   });
 
   // Proxy for vkeys API to avoid CORS
