@@ -116,8 +116,10 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   return (
     <div className="flex flex-col gap-6 w-full max-w-md">
       <div className="flex items-start justify-between overflow-hidden pl-4">
-        <div className="flex flex-col min-w-0">
-          <h3 className="text-white font-bold text-3xl truncate">{title}</h3>
+        <div className="flex flex-col min-w-0 gap-1">
+          <div className="marquee-container">
+            <h3 className="marquee-text text-white font-bold text-3xl">{title}</h3>
+          </div>
           <p className="text-white/60 text-lg truncate">{artist}</p>
         </div>
         <button 
