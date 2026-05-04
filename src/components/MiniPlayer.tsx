@@ -93,7 +93,9 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 
         {/* Info */}
         <div className="flex-1 min-w-0">
-          <h4 className="text-sm font-bold text-white truncate">{title}</h4>
+          <div className="marquee-container">
+            <h4 className="marquee-text text-sm font-bold text-white">{title}</h4>
+          </div>
           <p className="text-xs text-white/40 truncate">{artist}</p>
         </div>
 
