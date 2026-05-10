@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 import express from "express";
 import { createHash } from "crypto";
 import fs from "fs";
@@ -46,6 +47,18 @@ interface PersistedCoverBundle {
   generatedAt: string;
   assets: Record<string, PersistedCoverAsset>;
 }
+=======
+import { spawn } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const READY_PREFIX = 'RADIFLOW_BACKEND_READY ';
+const ERROR_PREFIX = 'RADIFLOW_BACKEND_ERROR ';
+const IS_WINDOWS = process.platform === 'win32';
+const EXECUTABLE_NAME = IS_WINDOWS ? 'radiflow-backend.exe' : 'radiflow-backend';
+>>>>>>> Stashed changes
 
 interface StartServerOptions {
   port?: number;
@@ -55,13 +68,18 @@ interface StartServerOptions {
   initialMusicDir?: string;
 }
 
+interface StartedServerHandle {
+  close: () => void;
+}
+
 interface StartedServer {
   port: number;
   host: string;
   url: string;
-  server: Server;
+  server: StartedServerHandle;
 }
 
+<<<<<<< Updated upstream
 const getCacheKey = (filePath: string, stats: fs.Stats) => `${filePath}|${stats.mtimeMs}|${stats.size}`;
 const getLibraryCacheDirectory = (musicDir: string) => path.join(musicDir, LIBRARY_CACHE_DIRECTORY_NAME);
 const getLibraryCacheFilePath = (musicDir: string) => path.join(getLibraryCacheDirectory(musicDir), LIBRARY_CACHE_FILE_NAME);
@@ -174,223 +192,155 @@ const persistCoverBundle = (musicDir: string, coverAssets: Map<string, Persisted
     folder: musicDir,
     generatedAt: new Date().toISOString(),
     assets: Object.fromEntries(coverAssets),
-  };
+=======
+interface ReadyPayload {
+  host: string;
+  port: number;
+  url: string;
+}
 
-  const bundleFilePath = getLibraryCoverBundleFilePath(musicDir);
-  const tempBundleFilePath = `${bundleFilePath}.tmp`;
-  fs.writeFileSync(tempBundleFilePath, gzipSync(JSON.stringify(payload)));
-  fs.renameSync(tempBundleFilePath, bundleFilePath);
+interface ErrorPayload {
+  code?: string;
+  message?: string;
+}
 
-  coverBundleMemoryCache.set(musicDir, payload);
-  cleanupLegacyCoverDirectory(musicDir);
+const getProjectRoot = () => (
+  path.basename(__dirname) === 'dist-electron'
+    ? path.dirname(__dirname)
+    : __dirname
+);
 
-  return payload;
-};
+const getExecutablePath = () => {
+  if (process.env.RADIFLOW_BACKEND_BINARY) {
+    return process.env.RADIFLOW_BACKEND_BINARY;
+  }
 
-const readPersistedLibraryCache = (musicDir: string): PersistedLibraryCache | null => {
-  try {
-    const cacheFilePath = getLibraryCacheFilePath(musicDir);
-    if (!fs.existsSync(cacheFilePath)) {
-      return null;
-    }
-
-    const rawCache = fs.readFileSync(cacheFilePath, 'utf8');
-    const parsedCache = JSON.parse(rawCache) as Partial<PersistedLibraryCache>;
-
-    if (parsedCache.version !== LIBRARY_CACHE_VERSION || parsedCache.folder !== musicDir || !Array.isArray(parsedCache.songs)) {
-      return null;
-    }
-
-    return {
-      version: LIBRARY_CACHE_VERSION,
-      folder: musicDir,
-      generatedAt: typeof parsedCache.generatedAt === 'string' ? parsedCache.generatedAt : new Date(0).toISOString(),
-      songs: parsedCache.songs,
-    };
-  } catch {
+  if (path.basename(__dirname) !== 'dist-electron') {
     return null;
   }
+
+  return path.join(__dirname, 'native', EXECUTABLE_NAME);
 };
 
-const persistLibraryCache = (musicDir: string, songs: LibrarySongPayload[]): PersistedLibraryCache => {
-  ensureDirectory(getLibraryCacheDirectory(musicDir));
+const getDebugExecutablePath = (projectRoot: string) => (
+  path.join(projectRoot, 'rust-backend', 'target', 'debug', EXECUTABLE_NAME)
+);
 
-  const payload: PersistedLibraryCache = {
-    version: LIBRARY_CACHE_VERSION,
-    folder: musicDir,
-    generatedAt: new Date().toISOString(),
-    songs,
+const parsePort = (value: string | undefined, fallback: number) => {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const getStartupOptions = (options: StartServerOptions) => {
+  const projectRoot = getProjectRoot();
+  const port = typeof options.port === 'number' && Number.isFinite(options.port)
+    ? options.port
+    : parsePort(process.env.PORT, 3000);
+  const host = options.host ?? process.env.HOST ?? '0.0.0.0';
+  const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development');
+  const staticRoot = options.staticRoot ?? process.env.STATIC_ROOT ?? projectRoot;
+  const initialMusicDir = options.initialMusicDir ?? process.env.MUSIC_DIR ?? path.join(projectRoot, 'music');
+
+  return {
+    host,
+    initialMusicDir,
+    mode,
+    port,
+    projectRoot,
+    staticRoot,
+>>>>>>> Stashed changes
   };
-
-  const cacheFilePath = getLibraryCacheFilePath(musicDir);
-  const tempCacheFilePath = `${cacheFilePath}.tmp`;
-  fs.writeFileSync(tempCacheFilePath, JSON.stringify(payload), 'utf8');
-  fs.renameSync(tempCacheFilePath, cacheFilePath);
-
-  return payload;
 };
 
-async function readLibrarySongs(musicDir: string): Promise<LibrarySongPayload[]> {
-  const previousCoverBundle = getPersistedCoverBundle(musicDir);
-  const nextCoverAssets = new Map<string, PersistedCoverAsset>();
-  const files = fs.readdirSync(musicDir)
-    .filter((file) => AUDIO_EXTENSIONS.has(path.extname(file).toLowerCase()))
-    .sort((left, right) => left.localeCompare(right, 'zh-CN'));
+const buildBackendArgs = (options: ReturnType<typeof getStartupOptions>) => [
+  '--port', String(options.port),
+  '--host', options.host,
+  '--mode', options.mode,
+  '--static-root', options.staticRoot,
+  '--music-dir', options.initialMusicDir,
+];
 
-  const songs = await Promise.all(files.map(async (filename) => {
-    const fullPath = path.join(musicDir, filename);
-    const stats = fs.statSync(fullPath);
-    const cacheKey = getCacheKey(fullPath, stats);
-    const cachedTrack = metadataCache.get(cacheKey);
-
-    if (cachedTrack) {
-      const cachedCoverAssetId = getCoverAssetIdFromUrl(cachedTrack.cover);
-      if (!cachedCoverAssetId) {
-        return cachedTrack;
-      }
-
-      const cachedCoverAsset = previousCoverBundle?.assets[cachedCoverAssetId];
-      if (cachedCoverAsset) {
-        nextCoverAssets.set(cachedCoverAssetId, cachedCoverAsset);
-        return cachedTrack;
-      }
-    }
-
-    try {
-      const metadata = await parseFile(fullPath, { duration: true });
-      const common = metadata.common;
-      const picture = common.picture?.[0];
-
-      let coverUrl: string | undefined;
-      if (picture) {
-        const coverAssetId = getCoverAssetId(picture.data, picture.format);
-        coverUrl = getCoverAssetUrl(coverAssetId);
-
-        if (!nextCoverAssets.has(coverAssetId)) {
-          nextCoverAssets.set(coverAssetId, {
-            mimeType: picture.format || 'application/octet-stream',
-            data: Buffer.from(picture.data).toString('base64'),
-          });
-        }
-      }
-
-      const payload: LibrarySongPayload = {
-        filename,
-        fileUrl: `/music/${encodeURIComponent(filename)}`,
-        title: common.title || filename.replace(/\.[^/.]+$/, ''),
-        artist: common.artist || 'Unknown Artist',
-        album: common.album,
-        cover: coverUrl,
-        duration: typeof metadata.format.duration === 'number' && Number.isFinite(metadata.format.duration)
-          ? metadata.format.duration
-          : undefined,
-      };
-
-      metadataCache.set(cacheKey, payload);
-      return payload;
-    } catch {
-      const payload: LibrarySongPayload = {
-        filename,
-        fileUrl: `/music/${encodeURIComponent(filename)}`,
-        title: filename.replace(/\.[^/.]+$/, ''),
-        artist: 'Unknown Artist',
-      };
-
-      metadataCache.set(cacheKey, payload);
-      return payload;
-    }
-  }));
-
-  const activeFiles = new Set(files.map((filename) => path.join(musicDir, filename)));
-  Array.from(metadataCache.keys()).forEach((cacheKey) => {
-    const separatorIndex = cacheKey.indexOf('|');
-    const filePath = separatorIndex >= 0 ? cacheKey.slice(0, separatorIndex) : cacheKey;
-    if (!activeFiles.has(filePath) && filePath.startsWith(musicDir)) {
-      metadataCache.delete(cacheKey);
-    }
+const waitForCommand = (command: string, args: string[], cwd: string) => new Promise<void>((resolve, reject) => {
+  const child = spawn(command, args, {
+    cwd,
+    env: process.env,
+    stdio: 'inherit',
   });
 
-  persistCoverBundle(musicDir, nextCoverAssets);
-
-  return songs;
-}
-
-async function getLibraryPayload(musicDir: string, forceRefresh = false): Promise<PersistedLibraryCache> {
-  if (!forceRefresh) {
-    const cachedPayload = readPersistedLibraryCache(musicDir);
-    if (cachedPayload) {
-      return cachedPayload;
+  child.on('error', reject);
+  child.on('exit', (code) => {
+    if (code === 0) {
+      resolve();
+      return;
     }
+
+    reject(new Error(`Command failed with exit code ${code ?? 'null'}: ${command}`));
+  });
+});
+
+const createSpawnCommand = async (options: ReturnType<typeof getStartupOptions>) => {
+  const packagedExecutable = getExecutablePath();
+  if (packagedExecutable) {
+    return {
+      args: buildBackendArgs(options),
+      command: packagedExecutable,
+    };
   }
 
-  const songs = await readLibrarySongs(musicDir);
-  return persistLibraryCache(musicDir, songs);
-}
+  const cargoExecutable = IS_WINDOWS ? 'cargo.exe' : 'cargo';
+  await waitForCommand(cargoExecutable, [
+    'build',
+    '--quiet',
+    '--manifest-path',
+    path.join(options.projectRoot, 'rust-backend', 'Cargo.toml'),
+  ], options.projectRoot);
+
+  return {
+    args: buildBackendArgs(options),
+    command: getDebugExecutablePath(options.projectRoot),
+  };
+};
 
 export async function startServer(options: StartServerOptions = {}): Promise<StartedServer> {
-  const app = express();
-  const portFromEnv = Number.parseInt(process.env.PORT ?? '3000', 10);
-  const requestedPort = typeof options.port === 'number' && Number.isFinite(options.port)
-    ? options.port
-    : portFromEnv;
-  const PORT = Number.isFinite(requestedPort) ? requestedPort : 3000;
-  const host = options.host ?? '0.0.0.0';
-  const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development');
-  const staticRoot = options.staticRoot ?? process.cwd();
+  const startupOptions = getStartupOptions(options);
+  const { command, args } = await createSpawnCommand(startupOptions);
 
-  // Serve music directory
-  let musicDir = options.initialMusicDir ?? path.join(process.cwd(), 'music');
-  let hasPrimedLibraryCache = false;
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: startupOptions.projectRoot,
+      env: {
+        ...process.env,
+        RUST_LOG: process.env.RUST_LOG ?? 'info',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
-  if (!fs.existsSync(musicDir)) {
-    ensureDirectory(musicDir);
-  }
-  
-  // Middleware to serve music from dynamic path
-  app.use('/music', (req, res, next) => {
-    express.static(musicDir)(req, res, next);
-  });
+    let settled = false;
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    const stderrLines: string[] = [];
 
-  // API to list music files
-  app.get("/api/music", async (req, res) => {
-    try {
-      const shouldForceRefresh = isRefreshRequested(req.query.refresh) || !hasPrimedLibraryCache;
-      const payload = await getLibraryPayload(musicDir, shouldForceRefresh);
-      hasPrimedLibraryCache = true;
+    const cleanup = () => {
+      child.stdout?.removeAllListeners();
+      child.stderr?.removeAllListeners();
+      child.removeAllListeners();
+    };
 
-      res.json({
-        folder: payload.folder,
-        songs: payload.songs,
-      });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to list music files" });
-    }
-  });
-
-  // API to update music directory
-  app.post("/api/settings/music-dir", express.json(), async (req, res) => {
-    const { path: newPath } = req.body;
-    if (typeof newPath === 'string' && fs.existsSync(newPath)) {
-      musicDir = newPath;
-      hasPrimedLibraryCache = false;
-
-      try {
-        const payload = await getLibraryPayload(musicDir, true);
-        hasPrimedLibraryCache = true;
-        res.json({ success: true, path: musicDir, songsCount: payload.songs.length });
-      } catch {
-        res.status(500).json({ error: "Failed to refresh music cache" });
+    const rejectWithPayload = (payload: ErrorPayload) => {
+      if (settled) {
+        return;
       }
-    } else {
-      res.status(400).json({ error: "Invalid path" });
-    }
-  });
 
-  // API to get current music directory
-  app.get("/api/settings/music-dir", (req, res) => {
-    res.json({ path: musicDir });
-  });
+      settled = true;
+      cleanup();
+      const error = new Error(payload.message ?? 'Rust backend failed to start.') as Error & { code?: string };
+      if (payload.code) {
+        error.code = payload.code;
+      }
+      reject(error);
+    };
 
+<<<<<<< Updated upstream
   app.get("/api/library/cover/:coverId", (req, res) => {
     const coverBundle = getPersistedCoverBundle(musicDir);
     const coverAsset = coverBundle?.assets[req.params.coverId];
@@ -416,57 +366,105 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       res.status(500).json({ error: "Failed to fetch from search API" });
     }
   });
+=======
+    const handleLine = (line: string, source: 'stdout' | 'stderr') => {
+      if (line.startsWith(READY_PREFIX)) {
+        if (settled) {
+          return;
+        }
 
-  app.get("/api/proxy/lyric", async (req, res) => {
-    const { id } = req.query;
-    try {
-      const response = await fetch(`https://api.vkeys.cn/v2/music/tencent/lyric?id=${id}`);
-      const data = await response.json();
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch from lyric API" });
-    }
-  });
+        settled = true;
+        cleanup();
+        const payload = JSON.parse(line.slice(READY_PREFIX.length)) as ReadyPayload;
+        resolve({
+          host: payload.host,
+          port: payload.port,
+          url: payload.url,
+          server: {
+            close: () => {
+              if (!child.killed) {
+                child.kill();
+              }
+            },
+          },
+        });
+        return;
+      }
 
-  // Vite middleware for development
-  if (mode !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
+      if (line.startsWith(ERROR_PREFIX)) {
+        try {
+          const payload = JSON.parse(line.slice(ERROR_PREFIX.length)) as ErrorPayload;
+          rejectWithPayload(payload);
+          return;
+        } catch {
+          rejectWithPayload({ message: line.slice(ERROR_PREFIX.length) });
+          return;
+        }
+      }
+
+      if (source === 'stderr' && line.trim()) {
+        stderrLines.push(line.trim());
+      }
+    };
+>>>>>>> Stashed changes
+
+    const consumeChunk = (chunk: Buffer, source: 'stdout' | 'stderr') => {
+      const text = chunk.toString('utf8');
+      if (source === 'stdout') {
+        stdoutBuffer += text;
+        process.stdout.write(text);
+      } else {
+        stderrBuffer += text;
+        process.stderr.write(text);
+      }
+
+      const buffer = source === 'stdout' ? stdoutBuffer : stderrBuffer;
+      const lines = buffer.split(/\r?\n/);
+      const remainder = lines.pop() ?? '';
+
+      for (const line of lines) {
+        handleLine(line, source);
+      }
+
+      if (source === 'stdout') {
+        stdoutBuffer = remainder;
+      } else {
+        stderrBuffer = remainder;
+      }
+    };
+
+    child.stdout?.on('data', (chunk: Buffer) => consumeChunk(chunk, 'stdout'));
+    child.stderr?.on('data', (chunk: Buffer) => consumeChunk(chunk, 'stderr'));
+
+    child.on('error', (error) => {
+      rejectWithPayload({ message: error.message });
     });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(staticRoot, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+
+    child.on('exit', (code, signal) => {
+      if (settled) {
+        return;
+      }
+
+      const message = stderrLines.at(-1)
+        ?? `Rust backend exited before it reported readiness (code=${code ?? 'null'}, signal=${signal ?? 'null'}).`;
+
+      rejectWithPayload({ message });
     });
-  }
-
-  return await new Promise((resolve, reject) => {
-    const server = app.listen(PORT, host, () => {
-      const address = server.address();
-      const resolvedPort = typeof address === 'object' && address ? address.port : PORT;
-      const resolvedUrlHost = host === '0.0.0.0' ? '127.0.0.1' : host;
-
-      console.log(`Server running on http://${resolvedUrlHost}:${resolvedPort}`);
-      resolve({
-        port: resolvedPort,
-        host,
-        url: `http://${resolvedUrlHost}:${resolvedPort}`,
-        server,
-      });
-    });
-
-    server.on('error', reject);
   });
 }
 
 const entryFilePath = process.argv[1] ? path.resolve(process.argv[1]) : null;
 
 if (entryFilePath === __filename) {
-  startServer().catch((error) => {
+  startServer().then((startedServer) => {
+    const shutdown = () => {
+      startedServer.server.close();
+      process.exit(0);
+    };
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  }).catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);
   });

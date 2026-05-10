@@ -36,9 +36,9 @@ const serverProcess = spawn(nodeExecutable, [tsxCliPath, 'server.ts'], {
   stdio: 'inherit',
   env: {
     ...process.env,
-    NODE_ENV: 'development',
-    DISABLE_HMR: 'true',
+    NODE_ENV: 'production',
     PORT: previewPort,
+    STATIC_ROOT: rootDir,
   },
 });
 

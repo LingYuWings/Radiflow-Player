@@ -1,0 +1,21 @@
+[package]
+name = "radiflow-backend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8.1"
+base64 = "0.22.1"
+clap = { version = "4.5.39", features = ["derive"] }
+flate2 = "1.1.2"
+lofty = "0.22.4"
+percent-encoding = "2.3.1"
+reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha1 = "0.10.6"
+time = { version = "0.3.39", features = ["formatting"] }
+tokio = { version = "1.45.1", features = ["macros", "rt-multi-thread", "net", "fs"] }
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { version = "0.6.2", features = ["fs"] }
