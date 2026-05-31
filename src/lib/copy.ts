@@ -91,6 +91,15 @@ export interface SettingsCopy {
 	selectFolder: string;
 	openFolder: string;
 	refreshDescription: string;
+	netease: string;
+	neteaseDescription: string;
+	neteaseCookie: string;
+	neteaseCookiePlaceholder: string;
+	neteaseLoginWithCookie: string;
+	neteaseLogout: string;
+	neteaseStartQrLogin: string;
+	neteaseRefreshPlaylists: string;
+	neteaseQrHint: string;
 	appearance: string;
 	 backgroundSource: string;
 	 useBuiltInBackground: string;
@@ -235,6 +244,15 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			selectFolder: '选择文件夹',
 			openFolder: '打开文件夹',
 			refreshDescription: '修改目录后请刷新媒体库，重新读取歌曲与封面信息。',
+			netease: '网易云音乐',
+			neteaseDescription: '客户端已内置网易云接口，可直接登录、读取歌单并播放。',
+			neteaseCookie: '登录 Cookie',
+			neteaseCookiePlaceholder: '粘贴 MUSIC_U 或完整 cookie',
+			neteaseLoginWithCookie: '使用 Cookie 登录',
+			neteaseLogout: '退出网易云',
+			neteaseStartQrLogin: '二维码登录',
+			neteaseRefreshPlaylists: '刷新云歌单',
+			neteaseQrHint: '二维码登录会直接使用客户端内置的网易云接口。',
 			appearance: '外观',
 			backgroundSource: '背景来源',
 			useBuiltInBackground: '项目内置背景',
@@ -368,6 +386,15 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			selectFolder: 'Select Folder',
 			openFolder: 'Open Folder',
 			refreshDescription: 'Refresh after changing folders to reload tracks and cover artwork.',
+			netease: 'NetEase Cloud Music',
+			neteaseDescription: 'The client includes the NetEase integration directly for login, playlist loading, and playback.',
+			neteaseCookie: 'Login Cookie',
+			neteaseCookiePlaceholder: 'Paste MUSIC_U or the full cookie string',
+			neteaseLoginWithCookie: 'Login With Cookie',
+			neteaseLogout: 'Log Out',
+			neteaseStartQrLogin: 'QR Login',
+			neteaseRefreshPlaylists: 'Refresh Cloud Playlists',
+			neteaseQrHint: 'QR login uses the NetEase integration bundled into the client.',
 			appearance: 'Appearance',
 			backgroundSource: 'Background Source',
 			useBuiltInBackground: 'Built-in Background',

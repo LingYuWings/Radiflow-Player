@@ -57,7 +57,7 @@
 项目由三层组成：
 
 1. Electron 主进程层：负责窗口、桌面交互和 IPC。
-2. 本地服务层：负责媒体库扫描、歌词代理、静态音频访问。
+2. 本地服务层：负责媒体库扫描、歌词代理、内嵌网易云 Node 接入与静态音频访问。
 3. React 前端层：负责播放器、媒体库、播放列表、设置等全部 UI 与状态管理。
 
 ### 3.1 分层职责图
@@ -91,11 +91,13 @@ flowchart LR
   App --> WindowChrome[components/WindowChrome.tsx]
   App --> useLibrary[hooks/useLibrary.ts]
   App --> useLyrics[hooks/useLyrics.ts]
+  App --> useNetEase[hooks/useNetEase.ts]
   App --> PlayerTypes[types/player.ts]
   Library --> PlayerTypes
   Playlist --> PlayerTypes
   useLibrary --> PlayerTypes
   useLyrics --> LyricsParser[utils/lyricsParser.ts]
+  useNetEase --> PlayerTypes
   LyricsView --> LyricsParser
   App --> Copy[lib/copy.ts]
   Library --> Utils[lib/utils.ts]
@@ -113,7 +115,7 @@ flowchart LR
 3. server.ts 在开发环境下挂载 Vite 中间件。
 4. 执行 npm run electron:dev，Electron 等待 http://localhost:3000 可访问。
 5. Electron 创建窗口并加载前端页面。
-6. React 启动后初始化媒体库、播放列表、偏好设置、播放会话。
+6. React 启动后初始化媒体库、播放列表、偏好设置、播放会话与网易云会话。
 
 ## 4.2 生产环境（打包）启动流程
 
@@ -194,7 +196,7 @@ npx electron-builder --win dir portable nsis
 ### server.ts
 
 - Express 本地服务入口。
-- 负责媒体库扫描、封面提取、歌词代理、静态音频资源访问。
+- 负责媒体库扫描、封面提取、歌词代理、网易云 Node 模块调用与静态音频资源访问。
 
 ### package.json
 
@@ -249,7 +251,7 @@ npx electron-builder --win dir portable nsis
 职责：
 
 - 项目级状态中心。
-- 管理播放状态、媒体库状态、播放列表、偏好设置、窗口状态、播放会话恢复。
+- 管理播放状态、媒体库状态、本地播放列表、网易云歌单、偏好设置、窗口状态、播放会话恢复。
 - 决定显示 Library 视图还是 Player 视图。
 - 串联 hooks、组件和本地存储。
 
@@ -273,7 +275,10 @@ npx electron-builder --win dir portable nsis
 
 - 媒体库主界面。
 - 支持歌曲、歌手、专辑、搜索、播放列表浏览。
-- 内部负责搜索过滤、歌手分组、专辑分组、滚动头部和内容视口效果。
+- 搜索页现在直接调用本地 `/api/netease/search*`，提供网易云在线搜索、热搜入口、可单条删除的搜索记录，以及清空输入按钮；搜索记录保存在渲染进程本地存储。
+- 搜索页带有按歌名/按专辑/按歌手三种模式切换；专辑/歌手模式返回实体结果，点击后会进入类似本地专辑/歌手的详情子页，并通过 `/api/netease/album/:id`、`/api/netease/artist/:id` 动态加载歌曲列表。
+- 网易云源新增“收藏歌曲”和“收藏专辑”两个分区；收藏数据持久化在当前音乐目录的 `lyric/lyrics.db` 中，独立于在线歌单增删逻辑。
+- 内部负责本地过滤、在线搜索状态、歌手分组、专辑分组、滚动头部和内容视口效果。
 - 当前也是滚动性能优化的主要落点。
 
 当前已知特点：
@@ -319,7 +324,7 @@ npx electron-builder --win dir portable nsis
 职责：
 
 - 设置页 UI。
-- 管理语言、媒体库目录、背景效果和应用信息。
+- 管理语言、媒体库目录、网易云登录、背景效果和应用信息。
 
 ### SpectrumVisualizer.tsx
 
@@ -380,8 +385,18 @@ npx electron-builder --win dir portable nsis
 职责：
 
 - 根据当前歌曲异步获取歌词。
-- 调用服务层代理接口搜索歌曲与歌词。
+- 调用本地 /api/lyrics，由服务端统一处理网易云搜索、lyric_new/lyric、SQLite 缓存和手动歌词回退。
+- 遇到网易云逐字歌词时优先使用 ytlrc 合并翻译，避免普通 tlyric 与 yrc 时间轴不对齐。
 - 内部使用 Map 做歌词请求缓存。
+
+### useNetEase.ts
+
+职责：
+
+- 恢复网易云登录会话。
+- 管理 Cookie 登录、二维码登录、歌单加载以及在线歌单创建/删除/增删歌曲。
+- 把服务层返回的网易云歌单摘要/详情转换为前端可播放的 PlaylistCollection，并保留 created/followed 分类信息，供歌单总览顶部切换创建的/关注的歌单。
+- `loadPlaylist` 支持 force 刷新，供在线歌单加歌/删歌后立即同步详情。
 
 ---
 
@@ -407,7 +422,7 @@ npx electron-builder --win dir portable nsis
 职责：
 
 - 定义 Song、LibrarySongPayload、StoredPlaylist、StoredPreferences、StoredPlaybackSession 等核心类型。
-- 提供歌曲 identity 和播放列表重建工具函数。
+- 提供歌曲 identity、播放列表重建工具函数、在线歌曲 `fileUrl -> song id` 提取能力，以及播放会话的队列快照回退能力。
 
 ---
 
@@ -418,7 +433,7 @@ npx electron-builder --win dir portable nsis
 职责：
 
 - 解析 LRC 和 YRC。
-- 支持多时间戳、翻译歌词、逐词时间信息。
+- 支持多时间戳、翻译歌词、网易云 yrc 逐字时间信息与元信息行。
 - 输出 LyricsView 可直接消费的 LyricLine 结构。
 
 ---
@@ -482,17 +497,14 @@ sequenceDiagram
   participant App as App.tsx
   participant Hook as useLyrics
   participant API as server.ts
-  participant External as vkeys API
+  participant NetEase as NetEase API
   participant Parser as lyricsParser.ts
 
   App->>Hook: title + artist
-  Hook->>API: GET /api/proxy/search
-  API->>External: 搜索歌曲
-  External-->>API: 搜索结果
-  API-->>Hook: song id
-  Hook->>API: GET /api/proxy/lyric?id=...
-  API->>External: 获取歌词
-  External-->>API: 歌词原文
+  Hook->>API: GET /api/lyrics?title=...&artist=...
+  API->>API: 查 SQLite / song id / 手动歌词
+  API->>NetEase: search + lyric_new/lyric
+  NetEase-->>API: lrc / ytlrc / tlyric / yrc
   API-->>Hook: lrc/yrc
   Hook->>Parser: parseYRC / parseLRC / mergeLyrics
   Parser-->>Hook: LyricLine[]
@@ -524,10 +536,16 @@ sequenceDiagram
 
 - key: apple-music-style-player.playback-session
 
+### 网易云会话
+
+- key: radiflow-player.netease.session
+- 内容：最近一次成功登录的 Cookie
+
 维护注意：
 
 - 修改数据结构时，优先考虑 version 字段与向后兼容。
 - 更改歌曲 identity 规则时，需要同步检查播放列表恢复和会话恢复逻辑。
+- 远程歌曲播放恢复依赖 playback-session 中的 queueSnapshot，以及网易云会话先完成恢复。
 - localStorage 由 origin 隔离。打包版 Express 必须绑定稳定端口（见 4.2 节），否则每次启动都是新 origin，所有设置全部丢失。
 
 ### userData 目录（Electron 独占，仅打包版有效）
@@ -558,13 +576,113 @@ Electron 的 `app.getPath('userData')` 路径用于跨重启的系统级持久�
 
 - 返回当前目录
 
+#### GET /api/netease/session
+
+- 返回网易云登录状态和当前账号摘要
+
+#### POST /api/netease/session
+
+- 更新可选 Cookie，并触发本地内嵌网易云会话刷新
+
+#### POST /api/netease/login/qr/start
+
+- 生成二维码登录 key 与二维码图片
+
+#### GET /api/netease/login/qr/check
+
+- 轮询二维码登录状态
+
+#### GET /api/netease/playlists
+
+- 返回当前登录用户的网易云歌单摘要，并合并创建歌单、收藏歌单与隐私歌单；每个摘要还会带上 created/followed 分类
+
+#### POST /api/netease/playlists
+
+- 创建新的网易云在线歌单
+- 前端创建弹窗可在本地/网易云之间切换 scope；若当前待添加歌曲是网易云在线歌曲，则会强制走该接口
+
+#### DELETE /api/netease/playlists/:id
+
+- 删除当前用户创建的网易云歌单
+
+#### POST /api/netease/playlists/:id/tracks
+
+- 调用 `playlist/tracks` 执行在线歌单加歌/删歌
+- `op=add` 用于从在线搜索结果添加歌曲到在线歌单
+- `op=del` 用于在在线歌单详情中删除歌曲
+
+#### GET /api/netease/playlist/:id
+
+- 返回指定网易云歌单的完整歌曲列表；若 /playlist/track/all 对特殊歌单返回空列表，则回退到 detail.trackIds + /song/detail 分批补全
+
+#### GET /api/netease/search
+
+- 通过 `cloudsearch` 返回可直接播放的网易云在线歌曲列表
+- 服务端统一把返回歌曲转换为前端 `Song.file = /api/netease/song/stream/:id` 可播放形式
+- 支持 `type=1`（歌曲）、`type=10`（专辑）、`type=100`（歌手）；前端搜索模式切换直接映射到该参数
+
+#### GET /api/netease/album/:id
+
+- 返回标准化后的网易云专辑详情，包含封面、专辑名、歌手名和完整歌曲列表
+- 歌曲字段直接复用在线搜索的 `LibrarySongPayload` 结构，前端可直接映射为可播放 `Song`
+
+#### GET /api/netease/artist/:id
+
+- 返回标准化后的网易云歌手详情，包含封面、歌手名和“全部歌曲”列表
+- 服务端优先通过 `artist_album` 汇总歌手名下专辑，再逐张专辑拉取曲目并做去重/排序
+- 聚合时会跳过 `type=合集` 的专辑，并仅保留当前歌手为首位演唱者的曲目，以避免 `artist_songs` 或合辑来源带来的内容混杂；必要时回退到 `artists` 返回的热门歌曲集合
+
+#### GET /api/netease/favorites
+
+- 读取当前音乐目录 `lyric/lyrics.db` 中持久化的网易云收藏歌曲与收藏专辑
+- 收藏歌曲直接返回可映射为 `Song.file = /api/netease/song/stream/:id` 的播放地址，收藏专辑返回详情页入口元数据
+
+#### POST /api/netease/favorites
+
+- 写入或更新一条本地网易云收藏记录，当前支持 `type=song|album`
+- 该收藏仅用于本应用的“音乐中心 - 网易云 - 收藏歌曲/收藏专辑”分区，不会同步到网易云账号本身
+
+#### DELETE /api/netease/favorites/:type/:id
+
+- 删除一条本地网易云收藏记录
+
+#### GET /api/netease/search/default
+
+- 返回默认搜索关键词与展示文案；当前 UI 已不再消费该接口
+
+#### GET /api/netease/search/hot
+
+- 返回简化版热搜关键词列表
+
+#### GET /api/netease/search/hot/detail
+
+- 返回带 score/iconType 的热搜详情，供搜索页空态展示热搜入口
+
+#### GET /api/netease/search/suggest
+
+- 返回搜索建议，当前前端主要消费歌曲/歌手/歌单建议
+
+#### GET /api/netease/search/multimatch
+
+- 返回多重匹配结果，当前前端主要消费歌手/歌单补充建议
+
+#### GET /api/netease/song/stream/:id
+
+- 解析并代理网易云歌曲可播放地址
+
+#### GET /api/lyrics
+
+- 本地歌曲优先走 SQLite 缓存 / 网易云搜索 + lyric_new/lyric / 手动歌词回退
+- 网易云远程歌曲优先按 song id 请求 lyric_new，必要时回退 lyric
+- 对带 yrc 的歌词，服务端会优先保留 ytlrc 作为翻译轨道；如果命中旧缓存且缺少 ytlrc，会自动刷新并回写缓存
+
 #### GET /api/proxy/search
 
-- 代理第三方歌曲搜索接口
+- 兼容旧客户端的网易云歌曲搜索代理
 
 #### GET /api/proxy/lyric
 
-- 代理第三方歌词接口
+- 兼容旧客户端的网易云歌词代理
 
 ### 媒体扫描实现特点
 
@@ -755,6 +873,7 @@ Library.tsx 当前包含：
 - 新增设置项
 - 增加新的背景模式
 - 扩展目录设置
+- 新增第三方音乐服务接入
 
 优先修改文件：
 
@@ -768,6 +887,7 @@ Library.tsx 当前包含：
 - 设置是否正确持久化到 localStorage
 - 中英文文案是否完整
 - Electron 环境和非 Electron 环境是否都能正常显示
+- 若包含远程音乐接入，需额外检查登录、歌单加载和远程播放是否正常
 
 ## 15.6 修改桌面窗口行为
 

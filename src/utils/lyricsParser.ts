@@ -19,6 +19,8 @@ export interface SongMetadata {
   cover?: string;
 }
 
+// Parse classic LRC text into timestamped lines. The parser accepts repeated
+// timestamps per line and opportunistically extracts inline translations.
 export function parseLRC(lrc: string): LyricLine[] {
   const lines = lrc.split('\n');
   const tempResult: LyricLine[] = [];
@@ -104,16 +106,47 @@ export function parseLRC(lrc: string): LyricLine[] {
   return mergedResult;
 }
 
+// Parse YRC word-timed lyrics. Preserving word timing allows the lyric view to
+// animate karaoke-style highlights instead of only whole-line state changes.
 export function parseYRC(yrc: string): LyricLine[] {
   const lines = yrc.split('\n');
   const result: LyricLine[] = [];
   
   // Line format: [start_ms, duration_ms]content
   const lineRegex = /^\[(\d+),(\d+)\](.*)$/;
-  // Word format: text(start_ms, duration_ms)
-  const wordRegex = /([^()]+)\((\d+),(\d+)\)/g;
+  // Word format: (start_ms, duration_ms, unknown)text
+  const wordRegex = /\((\d+),(\d+),(\d+)\)([^()]+)/g;
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    if (line.startsWith('{') && line.endsWith('}')) {
+      try {
+        const metadata = JSON.parse(line) as { t?: unknown; c?: Array<{ tx?: unknown }> };
+        const startTime = typeof metadata.t === 'number' && Number.isFinite(metadata.t)
+          ? metadata.t / 1000
+          : NaN;
+        const text = Array.isArray(metadata.c)
+          ? metadata.c
+            .map((item) => typeof item?.tx === 'string' ? item.tx : '')
+            .join('')
+            .trim()
+          : '';
+
+        if (Number.isFinite(startTime) && text) {
+          result.push({
+            startTime,
+            text,
+          });
+        }
+      } catch {
+        // Ignore malformed metadata lines and keep parsing timed lyric lines.
+      }
+
+      continue;
+    }
+
     const match = line.match(lineRegex);
     if (!match) continue;
 
@@ -128,10 +161,15 @@ export function parseYRC(yrc: string): LyricLine[] {
     wordRegex.lastIndex = 0;
     
     while ((wordMatch = wordRegex.exec(content)) !== null) {
+      const text = wordMatch[4];
+      if (!text) {
+        continue;
+      }
+
       words.push({
-        startTime: parseInt(wordMatch[2]) / 1000,
-        duration: parseInt(wordMatch[3]) / 1000,
-        text: wordMatch[1]
+        startTime: parseInt(wordMatch[1]) / 1000,
+        duration: parseInt(wordMatch[2]) / 1000,
+        text
       });
     }
 
@@ -143,17 +181,38 @@ export function parseYRC(yrc: string): LyricLine[] {
         words
       });
     } else if (content.trim()) {
+      const plainText = content.replace(/\(\d+,\d+,\d+\)/g, '').trim();
+      if (!plainText) {
+        continue;
+      }
+
       result.push({
         startTime,
         endTime: startTime + duration,
-        text: content.trim()
+        text: plainText
       });
     }
   }
 
-  return result.sort((a, b) => a.startTime - b.startTime);
+  const sortedResult = result.sort((a, b) => a.startTime - b.startTime);
+
+  for (let index = 0; index < sortedResult.length; index += 1) {
+    const current = sortedResult[index];
+    if (current.endTime !== undefined) {
+      continue;
+    }
+
+    const next = sortedResult[index + 1];
+    current.endTime = next && next.startTime > current.startTime
+      ? next.startTime
+      : current.startTime + 10;
+  }
+
+  return sortedResult;
 }
 
+// Merge a secondary lyric track, usually a translation, into the primary timed
+// lyric structure by fuzzy-matching timestamps.
 export function mergeLyrics(primary: LyricLine[], secondary: LyricLine[]): LyricLine[] {
   const result = [...primary];
   

@@ -1,6 +1,10 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Play, Pause, SkipBack, SkipForward, Music, Volume2, VolumeX } from 'lucide-react';
+import { cn } from '../lib/utils';
+
+const TITLE_MARQUEE_PADDING_PX = 24;
+const TITLE_MARQUEE_THRESHOLD_PX = 1;
 
 interface MiniPlayerProps {
   hasActiveSong: boolean;
@@ -34,10 +38,48 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   const [showVolumePopover, setShowVolumePopover] = useState(false);
   const volumeHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDraggingVolume = useRef(false);
+  const titleContainerRef = useRef<HTMLDivElement>(null);
+  const titleTextRef = useRef<HTMLHeadingElement>(null);
+  const [isTitleOverflowing, setIsTitleOverflowing] = useState(false);
+  const [titleMarqueeDistance, setTitleMarqueeDistance] = useState(0);
 
+  // The popover lingers briefly after hover-out so volume adjustments do not feel
+  // fragile, while dragging still pins it open.
   useEffect(() => () => {
     if (volumeHideTimerRef.current) clearTimeout(volumeHideTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    const container = titleContainerRef.current;
+    const titleElement = titleTextRef.current;
+    if (!container || !titleElement) {
+      return;
+    }
+
+    const updateTitleMarqueeState = () => {
+      const overflow = Math.max(0, titleElement.scrollWidth - container.clientWidth);
+      const shouldAnimate = overflow > TITLE_MARQUEE_THRESHOLD_PX;
+
+      setIsTitleOverflowing(shouldAnimate);
+      setTitleMarqueeDistance(shouldAnimate ? overflow + TITLE_MARQUEE_PADDING_PX : 0);
+    };
+
+    updateTitleMarqueeState();
+
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => updateTitleMarqueeState());
+    observer.observe(container);
+    observer.observe(titleElement);
+
+    return () => observer.disconnect();
+  }, [title]);
+
+  const titleMarqueeStyle = isTitleOverflowing
+    ? ({ '--marquee-distance': `-${titleMarqueeDistance}px` } as React.CSSProperties)
+    : undefined;
 
   const openVolume = () => {
     if (volumeHideTimerRef.current) clearTimeout(volumeHideTimerRef.current);
@@ -93,7 +135,18 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 
         {/* Info */}
         <div className="flex-1 min-w-0">
-          <h4 className="text-sm font-bold text-white truncate">{title}</h4>
+          {/* Match the main player behavior: only the song title runs marquee. */}
+          <div ref={titleContainerRef} className="marquee-container" style={titleMarqueeStyle}>
+            <h4
+              ref={titleTextRef}
+              className={cn(
+                'text-sm font-bold text-white',
+                isTitleOverflowing ? 'marquee-text' : 'block'
+              )}
+            >
+              {title}
+            </h4>
+          </div>
           <p className="text-xs text-white/40 truncate">{artist}</p>
         </div>
 

@@ -1,8 +1,11 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Play, Pause, SkipBack, SkipForward, Volume2, Music, ListMusic, Repeat, Repeat1, Shuffle, Mic2, ChevronDown } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
 import { SpectrumVisualizer } from './SpectrumVisualizer';
+
+const TITLE_MARQUEE_PADDING_PX = 24;
+const TITLE_MARQUEE_THRESHOLD_PX = 1;
 
 export type LoopMode = 'none' | 'all' | 'one';
 
@@ -56,12 +59,16 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   onToggleLyrics,
   onMinimize
 }) => {
+  // Keep formatting local to the control surface so the rest of the app can work
+  // with raw second values.
   const formatTime = (time: number) => {
     const mins = Math.floor(time / 60);
     const secs = Math.floor(time % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // One button cycles through three loop states, so the icon is derived here from
+  // the current mode instead of branching in JSX.
   const getLoopIcon = () => {
     switch (loopMode) {
       case 'one': return <Repeat1 size={20} className="text-white" />;
@@ -75,7 +82,45 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   const isDraggingProgress = useRef(false);
   const [progressDragging, setProgressDragging] = useState(false);
   const isDraggingVolume = useRef(false);
+  const titleContainerRef = useRef<HTMLDivElement>(null);
+  const titleTextRef = useRef<HTMLHeadingElement>(null);
+  const [isTitleOverflowing, setIsTitleOverflowing] = useState(false);
+  const [titleMarqueeDistance, setTitleMarqueeDistance] = useState(0);
 
+  useEffect(() => {
+    const container = titleContainerRef.current;
+    const titleElement = titleTextRef.current;
+    if (!container || !titleElement) {
+      return;
+    }
+
+    const updateTitleMarqueeState = () => {
+      const overflow = Math.max(0, titleElement.scrollWidth - container.clientWidth);
+      const shouldAnimate = overflow > TITLE_MARQUEE_THRESHOLD_PX;
+
+      setIsTitleOverflowing(shouldAnimate);
+      setTitleMarqueeDistance(shouldAnimate ? overflow + TITLE_MARQUEE_PADDING_PX : 0);
+    };
+
+    updateTitleMarqueeState();
+
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => updateTitleMarqueeState());
+    observer.observe(container);
+    observer.observe(titleElement);
+
+    return () => observer.disconnect();
+  }, [title]);
+
+  const titleMarqueeStyle = isTitleOverflowing
+    ? ({ '--marquee-distance': `-${titleMarqueeDistance}px` } as React.CSSProperties)
+    : undefined;
+
+  // Pointer capture keeps scrubbing reliable even if the cursor/finger leaves the
+  // track while dragging.
   const handleProgressPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (controlsDisabled) return;
     isDraggingProgress.current = true;
@@ -115,9 +160,20 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
 
   return (
     <div className="flex flex-col gap-6 w-full max-w-md">
+      {/* Only the title scrolls; keeping the artist static reduces motion noise. */}
       <div className="flex items-start justify-between overflow-hidden pl-4">
-        <div className="flex flex-col min-w-0">
-          <h3 className="text-white font-bold text-3xl truncate">{title}</h3>
+        <div className="flex flex-col min-w-0 gap-1">
+          <div ref={titleContainerRef} className="marquee-container" style={titleMarqueeStyle}>
+            <h3
+              ref={titleTextRef}
+              className={cn(
+                'text-white font-bold text-3xl',
+                isTitleOverflowing ? 'marquee-text' : 'block'
+              )}
+            >
+              {title}
+            </h3>
+          </div>
           <p className="text-white/60 text-lg truncate">{artist}</p>
         </div>
         <button 

@@ -5,6 +5,8 @@ interface SpectrumVisualizerProps {
   isPlaying: boolean;
 }
 
+// Canvas-based visualizer driven by the shared analyser node. Keeping the draw
+// loop imperative avoids React re-renders on every animation frame.
 export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({ analyser, isPlaying }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>();
@@ -19,6 +21,8 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({ analyser
     const bufferLength = analyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
+    // Resize lazily inside the draw loop so the canvas remains crisp after layout
+    // changes without needing a separate observer.
     const draw = () => {
       if (!canvasRef.current) return;
       const canvas = canvasRef.current;
@@ -41,7 +45,8 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({ analyser
       let barHeight;
       let x = 0;
 
-      // Only use the first half of the frequency data (lower frequencies)
+      // Render only the lower-frequency slice; it reads better at this compact size
+      // and avoids noisy high-end flicker.
       for (let i = 0; i < 64; i++) {
         barHeight = (dataArray[i] / 255) * canvas.height;
 

@@ -18,9 +18,14 @@ interface StreamerPaletteState {
 }
 
 const DEFAULT_STREAMER_COLORS = ['rgb(82, 82, 82)', 'rgb(38, 38, 38)'];
-const TARGET_STREAMER_LIGHTNESS = 60;
-const MIN_STREAMER_SATURATION = 58;
-const MAX_STREAMER_SATURATION = 82;
+const STREAMER_PALETTE_COLOR_COUNT = 6;
+const STREAMER_PALETTE_QUALITY = 6;
+const STREAMER_PALETTE_MIN_SATURATION = 0.04;
+const MIN_STREAMER_LIGHTNESS = 24;
+const MAX_STREAMER_LIGHTNESS = 74;
+const MIN_STREAMER_SATURATION = 18;
+const MAX_STREAMER_SATURATION = 92;
+const STREAMER_SPEED_MULTIPLIER = 0.88;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -57,14 +62,104 @@ const rgbToHsl = (red: number, green: number, blue: number) => {
   };
 };
 
+const getColorChannels = (value: unknown): [number, number, number] | null => {
+  if (Array.isArray(value) && value.length >= 3) {
+    const [red, green, blue] = value;
+    if ([red, green, blue].every((channel) => typeof channel === 'number' && Number.isFinite(channel))) {
+      return [red, green, blue];
+    }
+  }
+
+  if (value && typeof value === 'object') {
+    const candidate = value as {
+      array?: () => unknown;
+      rgb?: () => { r?: unknown; g?: unknown; b?: unknown };
+    };
+
+    if (typeof candidate.array === 'function') {
+      const arrayValue = candidate.array();
+      if (Array.isArray(arrayValue) && arrayValue.length >= 3) {
+        const [red, green, blue] = arrayValue;
+        if ([red, green, blue].every((channel) => typeof channel === 'number' && Number.isFinite(channel))) {
+          return [red, green, blue];
+        }
+      }
+    }
+
+    if (typeof candidate.rgb === 'function') {
+      const rgbValue = candidate.rgb();
+      const red = rgbValue?.r;
+      const green = rgbValue?.g;
+      const blue = rgbValue?.b;
+      if ([red, green, blue].every((channel) => typeof channel === 'number' && Number.isFinite(channel))) {
+        return [red as number, green as number, blue as number];
+      }
+    }
+  }
+
+  return null;
+};
+
 const normalizeStreamerColor = (red: number, green: number, blue: number) => {
-  const { hue, saturation } = rgbToHsl(red, green, blue);
-  if (!Number.isFinite(hue) || !Number.isFinite(saturation)) {
+  const { hue, saturation, lightness } = rgbToHsl(red, green, blue);
+  if (!Number.isFinite(hue) || !Number.isFinite(saturation) || !Number.isFinite(lightness)) {
     return DEFAULT_STREAMER_COLORS[0];
   }
 
-  const normalizedSaturation = clamp(Math.round(Math.max(saturation, MIN_STREAMER_SATURATION)), MIN_STREAMER_SATURATION, MAX_STREAMER_SATURATION);
-  return `hsl(${Math.round(hue)} ${normalizedSaturation}% ${TARGET_STREAMER_LIGHTNESS}%)`;
+  const normalizedSaturation = clamp(
+    Math.round(saturation < MIN_STREAMER_SATURATION ? MIN_STREAMER_SATURATION + saturation * 0.35 : saturation),
+    MIN_STREAMER_SATURATION,
+    MAX_STREAMER_SATURATION,
+  );
+  const normalizedLightness = clamp(
+    Math.round(
+      lightness < MIN_STREAMER_LIGHTNESS
+        ? MIN_STREAMER_LIGHTNESS + lightness * 0.25
+        : lightness > MAX_STREAMER_LIGHTNESS
+          ? MAX_STREAMER_LIGHTNESS - (100 - lightness) * 0.15
+          : lightness
+    ),
+    MIN_STREAMER_LIGHTNESS,
+    MAX_STREAMER_LIGHTNESS,
+  );
+
+  return `hsl(${Math.round(hue)} ${normalizedSaturation}% ${normalizedLightness}%)`;
+};
+
+const getStreamerColorScore = (color: unknown, channels: [number, number, number]) => {
+  const { saturation, lightness } = rgbToHsl(...channels);
+  const proportion = color && typeof color === 'object' && typeof (color as { proportion?: unknown }).proportion === 'number'
+    ? (color as { proportion: number }).proportion
+    : 0;
+  const midLightnessScore = 1 - Math.min(Math.abs(lightness - 52) / 52, 1);
+
+  return proportion * 100 * 0.55 + saturation * 0.35 + midLightnessScore * 100 * 0.1;
+};
+
+const buildStreamerColors = (palette: unknown): string[] => {
+  if (!Array.isArray(palette) || palette.length === 0) {
+    return DEFAULT_STREAMER_COLORS;
+  }
+
+  const colors = palette
+    .map((color) => {
+      const channels = getColorChannels(color);
+      if (!channels) {
+        return null;
+      }
+
+      return {
+        color: normalizeStreamerColor(...channels),
+        score: getStreamerColorScore(color, channels),
+      };
+    })
+    .filter((entry): entry is { color: string; score: number } => Boolean(entry))
+    .sort((left, right) => right.score - left.score)
+    .map((entry) => entry.color)
+    .filter((color, index, values) => values.indexOf(color) === index)
+    .slice(0, 4);
+
+  return colors.length > 0 ? colors : DEFAULT_STREAMER_COLORS;
 };
 
 const BLOB_CONFIGS = [
@@ -109,15 +204,16 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
     img.src = imageSrc;
     img.onload = async () => {
       try {
-        const palette = await getPalette(img, { colorCount: 4 });
+        const palette = await getPalette(img, {
+          colorCount: STREAMER_PALETTE_COLOR_COUNT,
+          quality: STREAMER_PALETTE_QUALITY,
+          minSaturation: STREAMER_PALETTE_MIN_SATURATION,
+          colorSpace: 'rgb',
+        });
         if (!isDisposed && paletteRequestIdRef.current === requestId && palette) {
-          const hexColors = palette.map((color: any) => {
-            const [r, g, b] = color.array();
-            return normalizeStreamerColor(r, g, b);
-          });
           const nextLayer = {
             key: imageSrc,
-            colors: hexColors.length > 0 ? hexColors : DEFAULT_STREAMER_COLORS,
+            colors: buildStreamerColors(palette),
           };
 
           setStreamerLayers((currentLayers) => {
@@ -218,7 +314,7 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
                         opacity: 0.85,
                       }}
                       animate={{ x: cfg.xKeys, y: cfg.yKeys }}
-                      transition={{ duration: cfg.duration, repeat: Infinity, ease: 'easeInOut' }}
+                      transition={{ duration: cfg.duration * STREAMER_SPEED_MULTIPLIER, repeat: Infinity, ease: 'easeInOut' }}
                     />
                   </div>
                 ))}

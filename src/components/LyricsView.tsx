@@ -9,14 +9,19 @@ interface LyricsViewProps {
   onSeek?: (time: number) => void;
 }
 
+// Lyric panel that keeps the active line centered and optionally lets the user
+// seek by clicking any parsed line.
 export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, onSeek }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const activeLineRef = useRef<HTMLDivElement>(null);
 
+  // The active line is whichever line has started and whose next sibling has not
+  // started yet.
   const activeIndex = lyrics.findIndex(
     (line, i) => currentTime >= line.startTime && (i === lyrics.length - 1 || currentTime < lyrics[i + 1].startTime)
   );
 
+  // Auto-center the active line so dense lyric files remain readable during playback.
   useEffect(() => {
     if (activeLineRef.current && containerRef.current) {
       const container = containerRef.current;
@@ -59,6 +64,8 @@ export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, onS
                     const isWordPast = currentTime >= word.startTime + word.duration;
                     
                     return (
+                      // YRC words are rendered twice: a dim base glyph plus a masked
+                      // foreground span whose width grows with the active timing.
                       <motion.span 
                         key={wIdx}
                         className="relative inline-block text-white/40"

@@ -47,3 +47,31 @@ body {
 [data-custom-background='true'] .customizable-backdrop-strong {
   backdrop-filter: blur(var(--rf-custom-blur-strong)) !important;
 }
+
+/* Marquee scrolling text — used for song title that may overflow */
+@keyframes marquee-scroll {
+  0%      { transform: translateX(0); opacity: 1; filter: blur(0px); }
+  /* Hold at start */
+  15%     { transform: translateX(0); opacity: 1; filter: blur(0px); }
+  /* Scroll to end */
+  72%     { transform: translateX(var(--marquee-distance, -60%)); opacity: 1; filter: blur(0px); }
+  /* Blur + fade out at end (~0.7s) */
+  77%     { transform: translateX(var(--marquee-distance, -60%)); opacity: 0; filter: blur(8px); }
+  /* Snap back to start while invisible */
+  78%     { transform: translateX(0); opacity: 0; filter: blur(8px); }
+  /* Blur + fade in at start (~0.7s) */
+  83%     { transform: translateX(0); opacity: 1; filter: blur(0px); }
+  /* Hold at start before next cycle */
+  100%    { transform: translateX(0); opacity: 1; filter: blur(0px); }
+}
+
+@utility marquee-container {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+@utility marquee-text {
+  display: inline-block;
+  animation: marquee-scroll 14s linear infinite;
+  will-change: transform;
+}
