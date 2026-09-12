@@ -1,9 +1,17 @@
-import React, { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useContext, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion } from 'motion/react';
-import { ChevronLeft, CirclePlay, Disc, Heart, LayoutGrid, List, Music, Play, Plus, Search, Trash2, User, X } from 'lucide-react';
+import { ChevronLeft, CirclePlay, Disc, Heart, LayoutGrid, List, ListPlus, Music, Play, Plus, Search, Trash2, User, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AppLanguage } from '../lib/copy';
-import { NETEASE_STREAM_PATH_PREFIX, getNetEaseSongIdFromSong, type LibrarySongPayload, type Song } from '../types/player';
+import { NETEASE_STREAM_PATH_PREFIX, createSongIdentity, getNetEaseSongIdFromSong, type LibrarySongPayload, type Song } from '../types/player';
+
+const PlaybackContext = createContext<{ currentSong: Song | null; onQueueNext?: (song: Song) => void; language: AppLanguage }>({ currentSong: null, language: 'zh-CN' });
+const QueueNextAction = ({ song }: { song: Song }) => {
+  const { currentSong, onQueueNext, language } = useContext(PlaybackContext);
+  const current = currentSong && createSongIdentity(currentSong) === createSongIdentity(song);
+  const label = language === 'zh-CN' ? '下一首播放' : 'Play next';
+  return <>{current && <span className="text-[10px] text-white/80" title={language === 'zh-CN' ? '当前歌曲' : 'Current track'}><Music size={13} /></span>}{onQueueNext && <button className="rf-icon-button" onClick={() => onQueueNext(song)} title={label} aria-label={`${label} ${song.title}`}><ListPlus size={16} /></button>}</>;
+};
 
 export interface PlaylistCollection {
   id: string;
@@ -28,6 +36,8 @@ export interface LibrarySearchNavigationRequest {
 }
 
 interface LibraryProps {
+  currentSong?: Song | null;
+  onQueueNext?: (song: Song) => void;
   songs: Song[];
   playlists: PlaylistCollection[];
   isLoading: boolean;
@@ -209,10 +219,11 @@ const gridItemRenderStyle: React.CSSProperties = {
 
 const listItemRenderStyle: React.CSSProperties = {
   contentVisibility: 'auto',
-  containIntrinsicSize: '76px 760px',
+  containIntrinsicSize: 'auto 80px',
+  height: 80,
 };
 
-const SONG_GRID_CLASS_NAME = 'grid grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4 xl:gap-5';
+const SONG_GRID_CLASS_NAME = 'grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4 xl:gap-5';
 const SONG_LIST_ROW_HEIGHT = 88;
 const SONG_GRID_CARD_EXTRA_HEIGHT = 84;
 const VIRTUALIZATION_OVERSCAN_ROWS = 4;
@@ -554,6 +565,7 @@ const SongCardComponent: React.FC<{
         )}
       </div>
       <div className="mt-0.5 flex shrink-0 items-center gap-2">
+        <QueueNextAction song={song} />
         {onToggleFavorite && (
           <button
             type="button"
@@ -583,15 +595,7 @@ const SongCardComponent: React.FC<{
   </motion.div>
 );
 
-const SongCard = memo(SongCardComponent, (prev, next) => (
-  prev.index === next.index
-  && prev.addLabel === next.addLabel
-  && prev.animated === next.animated
-  && prev.isFavorite === next.isFavorite
-  && Boolean(prev.onToggleFavorite) === Boolean(next.onToggleFavorite)
-  && Boolean(prev.onNavigateToArtist) === Boolean(next.onNavigateToArtist)
-  && areSongsEqual(prev.song, next.song)
-));
+const SongCard = memo(SongCardComponent);
 
 const CollectionCardComponent: React.FC<{
   title: string;
@@ -664,15 +668,7 @@ const CollectionCardComponent: React.FC<{
   </motion.div>
 );
 
-const CollectionCard = memo(CollectionCardComponent, (prev, next) => (
-  prev.index === next.index
-  && prev.title === next.title
-  && prev.subtitle === next.subtitle
-  && prev.cover === next.cover
-  && prev.artworkLayoutId === next.artworkLayoutId
-  && prev.isFavorite === next.isFavorite
-  && Boolean(prev.onToggleFavorite) === Boolean(next.onToggleFavorite)
-));
+const CollectionCard = memo(CollectionCardComponent);
 
 const SongListItemComponent: React.FC<{
   song: Song;
@@ -708,11 +704,23 @@ const SongListItemComponent: React.FC<{
     animate={{ opacity: 1, x: 0 }}
     transition={animated ? { delay: Math.min(index * 0.03, 0.4) } : undefined}
     className={cn(
-      'group w-full grid items-center gap-3 rounded-2xl px-4 py-3 transition-all',
+      'rf-library-row group w-full grid items-center gap-3 rounded-2xl px-4 py-3 transition-all',
       'grid-cols-[3rem_minmax(0,1.8fr)_minmax(0,1.2fr)_4.25rem_auto]',
       isActive ? 'bg-white/10 border border-white/10' : 'hover:bg-white/5 border border-transparent'
     )}
     style={listItemRenderStyle}
+    tabIndex={0}
+    aria-label={song.title}
+    onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button')) onPlay(); }}
+    onKeyDown={(event) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key === 'Enter') { event.preventDefault(); onPlay(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault(); event.stopPropagation();
+        const sibling = event.key === 'ArrowDown' ? event.currentTarget.nextElementSibling : event.currentTarget.previousElementSibling;
+        (sibling as HTMLElement | null)?.focus();
+      }
+    }}
   >
     <button
       type="button"
@@ -758,6 +766,7 @@ const SongListItemComponent: React.FC<{
     </div>
 
     <div className="flex items-center justify-end gap-2">
+      <QueueNextAction song={song} />
       {onAdd && (
         <button
           type="button"
@@ -813,18 +822,10 @@ const SongListItemComponent: React.FC<{
   </motion.div>
 );
 
-const SongListItem = memo(SongListItemComponent, (prev, next) => (
-  prev.index === next.index
-  && prev.addLabel === next.addLabel
-  && prev.animated === next.animated
-  && prev.isActive === next.isActive
-  && Boolean(prev.onAdd) === Boolean(next.onAdd)
-  && Boolean(prev.onToggleFavorite) === Boolean(next.onToggleFavorite)
-  && prev.isFavorite === next.isFavorite
-  && Boolean(prev.onRemove) === Boolean(next.onRemove)
-  && Boolean(prev.onNavigateToArtist) === Boolean(next.onNavigateToArtist)
-  && areSongsEqual(prev.song, next.song)
-));
+const SongListItem = memo((props: React.ComponentProps<typeof SongListItemComponent>) => {
+  const { currentSong } = useContext(PlaybackContext);
+  return <SongListItemComponent {...props} isActive={props.isActive || Boolean(currentSong && createSongIdentity(currentSong) === createSongIdentity(props.song))} />;
+});
 
 const EmptyState: React.FC<{ icon: React.ReactNode; title: string; subtitle?: string }> = ({ icon, title, subtitle }) => (
   <div className="min-h-80 rounded-4xl border border-white/10 bg-black/15 backdrop-blur-2xl customizable-backdrop-medium flex flex-col items-center justify-center gap-4 text-center text-white/35 px-6">
@@ -856,13 +857,13 @@ const useVirtualWindow = ({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [windowState, setWindowState] = useState({
     startIndex: 0,
-    endIndex: itemCount,
+    endIndex: enabled ? Math.min(itemCount, itemsPerRow * 12) : itemCount,
     paddingTop: 0,
-    paddingBottom: 0,
+    paddingBottom: enabled ? Math.max(0, Math.ceil(itemCount / itemsPerRow) - 12) * rowHeight : 0,
   });
 
   const updateWindow = useCallback(() => {
-    if (!enabled || itemCount === 0 || !wrapperRef.current || !scrollContainerRef.current) {
+    if (!enabled || itemCount === 0) {
       setWindowState({
         startIndex: 0,
         endIndex: itemCount,
@@ -871,14 +872,18 @@ const useVirtualWindow = ({
       });
       return;
     }
+    // Keep the bounded initial window until DOM measurements are available.
+    if (!wrapperRef.current || !scrollContainerRef.current) return;
 
     const scrollContainer = scrollContainerRef.current;
     const wrapper = wrapperRef.current;
+    // Preserve the virtual window while the home page is paint-skipped.
+    if (scrollContainer.closest('[inert]') || !scrollContainer.getClientRects().length || scrollContainer.clientHeight === 0) return;
     const wrapperTop = wrapper.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top + scrollContainer.scrollTop;
     const visibleTop = Math.max(0, scrollContainer.scrollTop - wrapperTop);
     const visibleBottom = visibleTop + scrollContainer.clientHeight;
     const totalRows = Math.ceil(itemCount / itemsPerRow);
-    const startRow = Math.max(0, Math.floor(visibleTop / rowHeight) - overscanRows);
+    const startRow = Math.min(Math.max(0, totalRows - 1), Math.max(0, Math.floor(visibleTop / rowHeight) - overscanRows));
     const endRow = Math.min(totalRows, Math.ceil(visibleBottom / rowHeight) + overscanRows);
     const startIndex = Math.min(itemCount, startRow * itemsPerRow);
     const endIndex = Math.min(itemCount, Math.max(startIndex + itemsPerRow, endRow * itemsPerRow));
@@ -903,25 +908,34 @@ const useVirtualWindow = ({
     }
 
     const scrollContainer = scrollContainerRef.current;
-    const handleScroll = () => updateWindow();
+    let pendingFrame = 0;
+    const handleScroll = () => {
+      if (pendingFrame) return;
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = 0;
+        updateWindow();
+      });
+    };
 
     scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
     window.addEventListener('resize', handleScroll);
 
     if (typeof ResizeObserver === 'undefined') {
       return () => {
+        cancelAnimationFrame(pendingFrame);
         scrollContainer.removeEventListener('scroll', handleScroll);
         window.removeEventListener('resize', handleScroll);
       };
     }
 
-    const observer = new ResizeObserver(() => updateWindow());
+    const observer = new ResizeObserver(handleScroll);
     observer.observe(scrollContainer);
     if (wrapperRef.current) {
       observer.observe(wrapperRef.current);
     }
 
     return () => {
+      cancelAnimationFrame(pendingFrame);
       scrollContainer.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', handleScroll);
       observer.disconnect();
@@ -1038,7 +1052,8 @@ const VirtualSongGrid: React.FC<VirtualSongGridProps> = ({
   songs,
   unfavoriteLabel,
 }) => {
-  const [containerWidth, setContainerWidth] = useState(0);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [gridMetrics, setGridMetrics] = useState({ columns: 4, rowHeight: 260 });
 
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
@@ -1046,7 +1061,15 @@ const VirtualSongGrid: React.FC<VirtualSongGridProps> = ({
       return;
     }
 
-    const updateContainerWidth = () => setContainerWidth(scrollContainer.clientWidth);
+    const updateContainerWidth = () => {
+      const grid = gridRef.current;
+      const first = grid?.firstElementChild as HTMLElement | null;
+      if (!grid || !first || grid.clientWidth === 0) return;
+      const style = getComputedStyle(grid);
+      const columns = style.gridTemplateColumns.split(' ').filter(Boolean).length;
+      const rowHeight = first.getBoundingClientRect().height + (Number.parseFloat(style.rowGap) || 0);
+      if (rowHeight > 0) setGridMetrics((previous) => previous.columns === columns && Math.abs(previous.rowHeight - rowHeight) < 0.5 ? previous : { columns, rowHeight });
+    };
     updateContainerWidth();
 
     if (typeof ResizeObserver === 'undefined') {
@@ -1056,21 +1079,10 @@ const VirtualSongGrid: React.FC<VirtualSongGridProps> = ({
 
     const observer = new ResizeObserver(() => updateContainerWidth());
     observer.observe(scrollContainer);
+    if (gridRef.current) observer.observe(gridRef.current);
 
     return () => observer.disconnect();
   }, [scrollContainerRef]);
-
-  const gridMetrics = useMemo(() => {
-    const effectiveWidth = containerWidth || 1200;
-    const columns = effectiveWidth >= 1536 ? 6 : effectiveWidth >= 1280 ? 5 : 4;
-    const gap = effectiveWidth >= 1280 ? 20 : 16;
-    const columnWidth = Math.max(160, (effectiveWidth - gap * (columns - 1)) / columns);
-
-    return {
-      columns,
-      rowHeight: columnWidth + SONG_GRID_CARD_EXTRA_HEIGHT,
-    };
-  }, [containerWidth]);
 
   const shouldVirtualize = songs.length > GRID_VIRTUALIZATION_THRESHOLD;
   const { wrapperRef, startIndex, endIndex, paddingTop, paddingBottom } = useVirtualWindow({
@@ -1086,7 +1098,7 @@ const VirtualSongGrid: React.FC<VirtualSongGridProps> = ({
   return (
     <div ref={wrapperRef} className="pb-4">
       {shouldVirtualize && paddingTop > 0 && <div style={{ height: paddingTop }} />}
-      <div className={SONG_GRID_CLASS_NAME}>
+      <div ref={gridRef} className={SONG_GRID_CLASS_NAME}>
         {visibleSongs.map((song, offset) => {
           const index = shouldVirtualize ? startIndex + offset : offset;
 
@@ -1114,6 +1126,8 @@ const VirtualSongGrid: React.FC<VirtualSongGridProps> = ({
 };
 
 export const Library: React.FC<LibraryProps> = ({
+  currentSong = null,
+  onQueueNext,
   songs,
   playlists,
   isLoading,
@@ -1152,6 +1166,10 @@ export const Library: React.FC<LibraryProps> = ({
   const [onlineDetailSongs, setOnlineDetailSongs] = useState<Song[]>([]);
   const [isOnlineDetailLoading, setIsOnlineDetailLoading] = useState(false);
   const [isSearchingOnline, setIsSearchingOnline] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [searchRetry, setSearchRetry] = useState(0);
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [searchPage, setSearchPage] = useState({ key: '', offset: 0 });
   const [isLoadingFavorites, setIsLoadingFavorites] = useState(false);
   const [hotSearchKeywords, setHotSearchKeywords] = useState<string[]>([]);
   const [scrollUiState, setScrollUiState] = useState({
@@ -1356,11 +1374,15 @@ export const Library: React.FC<LibraryProps> = ({
     }
 
     const keyword = deferredSearchQuery.trim();
+    const searchKey = `${keyword}::${searchMode}`;
+    const offset = searchPage.key === searchKey ? searchPage.offset : 0;
+    setSearchError(false);
     if (!keyword) {
       setOnlineSearchResults([]);
       setOnlineArtistResults([]);
       setOnlineAlbumResults([]);
       setIsSearchingOnline(false);
+      setSearchTotal(0);
       return;
     }
 
@@ -1372,7 +1394,7 @@ export const Library: React.FC<LibraryProps> = ({
 
       try {
         const searchResult = await fetch(
-          `/api/netease/search?keywords=${encodeURIComponent(keyword)}&type=${searchMode === 'album' ? 10 : searchMode === 'artist' ? 100 : 1}`,
+          `/api/netease/search?keywords=${encodeURIComponent(keyword)}&type=${searchMode === 'album' ? 10 : searchMode === 'artist' ? 100 : 1}&limit=30&offset=${offset}`,
           { signal: controller.signal }
         );
 
@@ -1381,6 +1403,8 @@ export const Library: React.FC<LibraryProps> = ({
         }
 
         const payload = await searchResult.json() as NetEaseSearchResponse;
+        if (isCancelled) return;
+        if (!searchResult.ok) throw new Error(payload.error || 'Search failed');
         const primarySongs = searchResult.ok && Array.isArray(payload.songs)
           ? payload.songs.map(toSearchSong)
           : [];
@@ -1391,18 +1415,18 @@ export const Library: React.FC<LibraryProps> = ({
           ? payload.albums
           : [];
 
-        setOnlineSearchResults(primarySongs);
-        setOnlineArtistResults(primaryArtists);
-        setOnlineAlbumResults(primaryAlbums);
+        const unique = <T,>(items: T[], key: (item: T) => unknown) => [...new Map(items.map((item) => [key(item), item])).values()];
+        setOnlineSearchResults((old) => unique(offset ? [...old, ...primarySongs] : primarySongs, (item) => item.file));
+        setOnlineArtistResults((old) => unique(offset ? [...old, ...primaryArtists] : primaryArtists, (item) => item.id));
+        setOnlineAlbumResults((old) => unique(offset ? [...old, ...primaryAlbums] : primaryAlbums, (item) => item.id));
+        setSearchTotal(primarySongs.length + primaryArtists.length + primaryAlbums.length ? payload.total || 0 : offset);
 
         if (searchResult.ok) {
           rememberSearchHistory(keyword, searchMode);
         }
       } catch (error) {
         if (!isCancelled && !(error instanceof DOMException && error.name === 'AbortError')) {
-          setOnlineSearchResults([]);
-          setOnlineArtistResults([]);
-          setOnlineAlbumResults([]);
+          setSearchError(true);
         }
       } finally {
         if (!isCancelled) {
@@ -1411,13 +1435,16 @@ export const Library: React.FC<LibraryProps> = ({
       }
     };
 
-    void loadSearchResults();
+    if (!offset) { setOnlineSearchResults([]); setOnlineArtistResults([]); setOnlineAlbumResults([]); }
+    setIsSearchingOnline(true);
+    const debounce = window.setTimeout(() => { void loadSearchResults(); }, 350);
 
     return () => {
       isCancelled = true;
+      window.clearTimeout(debounce);
       controller.abort();
     };
-  }, [deferredSearchQuery, searchMode, section]);
+  }, [deferredSearchQuery, searchMode, section, searchRetry, searchPage]);
 
   const toggleSongFavorite = useCallback(async (song: Song) => {
     const songId = getNetEaseSongIdFromSong(song);
@@ -1842,7 +1869,7 @@ export const Library: React.FC<LibraryProps> = ({
   const { headerCollapseProgress, showTopEdgeBlur, showBottomEdgeBlur } = scrollUiState;
 
   const updateScrollMetrics = useCallback((node: HTMLDivElement | null) => {
-    if (!node) return;
+    if (!node || node.closest('[inert]')) return;
 
     const nextMaxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
     const nextState = {
@@ -1992,6 +2019,7 @@ export const Library: React.FC<LibraryProps> = ({
       <input
         type="text"
         placeholder={searchPlaceholder}
+        aria-label={section === 'search' ? (language === 'zh-CN' ? '搜索网易云音乐' : 'Search NetEase music') : (language === 'zh-CN' ? '筛选当前曲库' : 'Filter library')}
         value={searchQuery}
         onChange={(event) => setSearchQuery(event.target.value)}
         className={cn(
@@ -2593,6 +2621,8 @@ export const Library: React.FC<LibraryProps> = ({
 
             <EmptyState icon={<Search size={28} />} title={copy.emptySearch} subtitle={copy.searchResultsSubtitle} />
           </div>
+        ) : searchError ? (
+          <div className="rf-glass rounded-3xl p-8 text-center" role="status"><p className="text-white/85">{language === 'zh-CN' ? '搜索暂时不可用，请检查网络连接' : 'Search unavailable. Check your connection.'}</p><button className="mt-4 rounded-xl bg-white/15 px-5 py-2" onClick={() => setSearchRetry((value) => value + 1)}>{language === 'zh-CN' ? '重新搜索' : 'Retry search'}</button></div>
         ) : isSearchingOnline && !hasPrimaryResults ? (
           <EmptyState icon={<Search size={28} />} title={copy.searchingOnline} />
         ) : (
@@ -2602,6 +2632,7 @@ export const Library: React.FC<LibraryProps> = ({
             ) : (
               renderPrimaryResults()
             )}
+            {hasPrimaryResults && searchTotal > (onlineSearchResults.length + onlineArtistResults.length + onlineAlbumResults.length) && <div className="flex justify-center py-4"><button className="rf-glass rounded-2xl px-6 py-3 text-sm text-white/85 disabled:opacity-50" disabled={isSearchingOnline} onClick={() => setSearchPage({ key: `${deferredSearchQuery.trim()}::${searchMode}`, offset: (searchPage.key === `${deferredSearchQuery.trim()}::${searchMode}` ? searchPage.offset : 0) + 30 })}>{isSearchingOnline ? (language === 'zh-CN' ? '正在加载…' : 'Loading…') : (language === 'zh-CN' ? '加载更多结果' : 'Load more results')}</button></div>}
           </div>
         )}
       </>
@@ -3139,7 +3170,7 @@ export const Library: React.FC<LibraryProps> = ({
   };
 
   return (
-    <LayoutGroup>
+    <PlaybackContext.Provider value={{ currentSong, onQueueNext, language }}><LayoutGroup>
       <div className="relative flex h-full w-full flex-col overflow-hidden px-5 py-5 md:px-6 md:py-6">
         {renderSectionHeader()}
 
@@ -3147,7 +3178,7 @@ export const Library: React.FC<LibraryProps> = ({
           <div
             ref={scrollContainerRef}
             onScroll={(event) => scheduleScrollMetricsUpdate(event.currentTarget)}
-            className="h-full w-full overflow-y-auto scrollbar-hide px-1.5 py-1.5 md:px-2 md:py-2"
+            className="h-full w-full overflow-y-auto rf-scroll px-1.5 py-1.5 md:px-2 md:py-2"
           >
             <div className="min-h-full">
               {shouldShowLoadingState ? (
@@ -3203,6 +3234,6 @@ export const Library: React.FC<LibraryProps> = ({
         {renderAlbumOverlay()}
         {renderOnlineDetailOverlay()}
       </div>
-    </LayoutGroup>
+    </LayoutGroup></PlaybackContext.Provider>
   );
 };

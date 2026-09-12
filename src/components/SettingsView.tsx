@@ -3,8 +3,11 @@ import { motion } from 'motion/react';
 import { Disc3, FolderOpen, FolderPlus, Globe2, ImagePlus, Info, Library, Monitor, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AppLanguage, SettingsCopy } from '../lib/copy';
+import { VISUALIZER_MODES, VisualizerMode } from '../lib/visualizer';
 
 interface SettingsViewProps {
+  visualizerMode: VisualizerMode;
+  onVisualizerModeChange: (mode: VisualizerMode) => void;
   copy: SettingsCopy;
   language: AppLanguage;
   onLanguageChange: (language: AppLanguage) => void;
@@ -62,6 +65,8 @@ const SettingsCard: React.FC<{
 );
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
+  visualizerMode,
+  onVisualizerModeChange,
   copy,
   language,
   onLanguageChange,
@@ -371,10 +376,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 )}
               </div>
 
-              {hasCustomBackground && backgroundSource === 'custom' && (
+              {backgroundSource !== 'transparent' && (
                 <div className="space-y-3 pt-2">
                   <div className="flex items-center justify-between gap-4">
-                    <p className="text-sm font-semibold text-white">{copy.customBackgroundBlur}</p>
+                    <p className="text-sm font-semibold text-white">{language === 'zh-CN' ? '卡片背景模糊' : 'Card background blur'}</p>
                     <span className="text-xs font-mono uppercase tracking-[0.18em] text-white/45">{customBackgroundBlur}px</span>
                   </div>
                   <input
@@ -383,6 +388,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     max="120"
                     step="1"
                     value={customBackgroundBlur}
+                    aria-label={language === 'zh-CN' ? '卡片背景模糊' : 'Card background blur'}
                     onChange={(event) => onCustomBackgroundBlurChange(Number.parseInt(event.target.value, 10))}
                     className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer accent-white"
                   />
@@ -443,6 +449,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 </>
               )}
+            </div>
+          </SettingsCard>
+
+          <SettingsCard title={language === 'zh-CN' ? '音频可视化' : 'Audio visualization'} icon={<Sparkles size={18} />}>
+            <p className="text-sm text-white/55 mb-4">{language === 'zh-CN' ? '默认使用经典频谱。关闭后不绘制动画，不影响音乐播放。' : 'Classic spectrum is the default. Turning it off does not affect playback.'}</p>
+            <div className="grid grid-cols-2 gap-3" role="group" aria-label={language === 'zh-CN' ? '可视化效果' : 'Visualization effect'}>
+              {VISUALIZER_MODES.map(mode => <button key={mode} type="button" aria-pressed={visualizerMode === mode} onClick={() => onVisualizerModeChange(mode)} className={cn('rounded-2xl px-4 py-3 text-sm border transition-colors', visualizerMode === mode ? 'bg-white text-black border-white' : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10')}>
+                {({ spectrum: ['经典频谱', 'Classic spectrum'], waveform: ['波形', 'Waveform'], mirror: ['镜像频谱', 'Mirrored spectrum'], off: ['关闭', 'Off'] })[mode][language === 'zh-CN' ? 0 : 1]}
+              </button>)}
             </div>
           </SettingsCard>
 

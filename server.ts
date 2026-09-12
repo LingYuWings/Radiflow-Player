@@ -8,7 +8,11 @@ import { DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
 import path from "path";
 import { fileURLToPath } from "url";
-import { gunzipSync, gzipSync } from "zlib";
+import { gunzipSync, gzip } from "zlib";
+import { promisify } from 'node:util';
+import { mapConcurrent } from './src/lib/mapConcurrent';
+const gzipAsync = promisify(gzip);
+const libraryScans = new Map<string, Promise<PersistedLibraryCache>>();
 
 // Local HTTP service for the Electron shell. It owns library scanning, cover and
 // lyric persistence, and the API surface consumed by the React renderer.
@@ -53,6 +57,8 @@ const LYRIC_CACHE_DB_FILE_NAME = 'lyrics.db';
 const MANUAL_LYRIC_EXTENSIONS = new Set(['.lrc', '.yrc', '.txt']);
 
 interface LibrarySongPayload {
+  mtimeMs?: number;
+  size?: number;
   filename: string;
   fileUrl: string;
   title: string;
@@ -1391,7 +1397,7 @@ const getPersistedCoverBundle = (musicDir: string) => {
   return persistedBundle;
 };
 
-const persistCoverBundle = (musicDir: string, coverAssets: Map<string, PersistedCoverAsset>) => {
+const persistCoverBundle = async (musicDir: string, coverAssets: Map<string, PersistedCoverAsset>) => {
   ensureDirectory(getLibraryCacheDirectory(musicDir));
 
   const payload: PersistedCoverBundle = {
@@ -1403,8 +1409,8 @@ const persistCoverBundle = (musicDir: string, coverAssets: Map<string, Persisted
 
   const bundleFilePath = getLibraryCoverBundleFilePath(musicDir);
   const tempBundleFilePath = `${bundleFilePath}.tmp`;
-  fs.writeFileSync(tempBundleFilePath, gzipSync(JSON.stringify(payload)));
-  fs.renameSync(tempBundleFilePath, bundleFilePath);
+  await fs.promises.writeFile(tempBundleFilePath, await gzipAsync(JSON.stringify(payload)));
+  await fs.promises.rename(tempBundleFilePath, bundleFilePath);
 
   coverBundleMemoryCache.set(musicDir, payload);
   cleanupLegacyCoverDirectory(musicDir);
@@ -1437,7 +1443,7 @@ const readPersistedLibraryCache = (musicDir: string): PersistedLibraryCache | nu
   }
 };
 
-const persistLibraryCache = (musicDir: string, songs: LibrarySongPayload[]): PersistedLibraryCache => {
+const persistLibraryCache = async (musicDir: string, songs: LibrarySongPayload[]): Promise<PersistedLibraryCache> => {
   ensureDirectory(getLibraryCacheDirectory(musicDir));
 
   const payload: PersistedLibraryCache = {
@@ -1449,8 +1455,8 @@ const persistLibraryCache = (musicDir: string, songs: LibrarySongPayload[]): Per
 
   const cacheFilePath = getLibraryCacheFilePath(musicDir);
   const tempCacheFilePath = `${cacheFilePath}.tmp`;
-  fs.writeFileSync(tempCacheFilePath, JSON.stringify(payload), 'utf8');
-  fs.renameSync(tempCacheFilePath, cacheFilePath);
+  await fs.promises.writeFile(tempCacheFilePath, JSON.stringify(payload), 'utf8');
+  await fs.promises.rename(tempCacheFilePath, cacheFilePath);
 
   return payload;
 };
@@ -1459,16 +1465,19 @@ const persistLibraryCache = (musicDir: string, songs: LibrarySongPayload[]): Per
 // folder as the library root and keeps scan cost predictable for desktop use.
 async function readLibrarySongs(musicDir: string): Promise<LibrarySongPayload[]> {
   const previousCoverBundle = getPersistedCoverBundle(musicDir);
+  const previousTracks = new Map((readPersistedLibraryCache(musicDir)?.songs || []).map((song) => [song.filename, song]));
   const nextCoverAssets = new Map<string, PersistedCoverAsset>();
-  const files = fs.readdirSync(musicDir)
+  const files = (await fs.promises.readdir(musicDir))
     .filter((file) => AUDIO_EXTENSIONS.has(path.extname(file).toLowerCase()))
     .sort((left, right) => left.localeCompare(right, 'zh-CN'));
 
-  const songs = await Promise.all(files.map(async (filename) => {
+  const results = await mapConcurrent(files, 4, async (filename) => {
     const fullPath = path.join(musicDir, filename);
-    const stats = fs.statSync(fullPath);
+    const stats = await fs.promises.stat(fullPath).catch(() => null);
+    if (!stats?.isFile()) return null;
     const cacheKey = getCacheKey(fullPath, stats);
-    const cachedTrack = metadataCache.get(cacheKey);
+    const previous = previousTracks.get(filename);
+    const cachedTrack = metadataCache.get(cacheKey) || (previous?.mtimeMs === stats.mtimeMs && previous?.size === stats.size ? previous : undefined);
 
     if (cachedTrack) {
       const cachedCoverAssetId = getCoverAssetIdFromUrl(cachedTrack.cover);
@@ -1502,6 +1511,8 @@ async function readLibrarySongs(musicDir: string): Promise<LibrarySongPayload[]>
       }
 
       const payload: LibrarySongPayload = {
+        mtimeMs: stats.mtimeMs,
+        size: stats.size,
         filename,
         fileUrl: `/music/${encodeURIComponent(filename)}`,
         title: common.title || filename.replace(/\.[^/.]+$/, ''),
@@ -1517,6 +1528,8 @@ async function readLibrarySongs(musicDir: string): Promise<LibrarySongPayload[]>
       return payload;
     } catch {
       const payload: LibrarySongPayload = {
+        mtimeMs: stats.mtimeMs,
+        size: stats.size,
         filename,
         fileUrl: `/music/${encodeURIComponent(filename)}`,
         title: filename.replace(/\.[^/.]+$/, ''),
@@ -1526,7 +1539,8 @@ async function readLibrarySongs(musicDir: string): Promise<LibrarySongPayload[]>
       metadataCache.set(cacheKey, payload);
       return payload;
     }
-  }));
+  });
+  const songs = results.filter((track): track is LibrarySongPayload => track !== null);
 
   const activeFiles = new Set(files.map((filename) => path.join(musicDir, filename)));
   Array.from(metadataCache.keys()).forEach((cacheKey) => {
@@ -1537,7 +1551,10 @@ async function readLibrarySongs(musicDir: string): Promise<LibrarySongPayload[]>
     }
   });
 
-  persistCoverBundle(musicDir, nextCoverAssets);
+  const previousAssets = previousCoverBundle?.assets;
+  if (!previousAssets || nextCoverAssets.size !== Object.keys(previousAssets).length || [...nextCoverAssets.keys()].some((id) => !previousAssets[id])) {
+    await persistCoverBundle(musicDir, nextCoverAssets);
+  }
 
   return songs;
 }
@@ -1552,8 +1569,11 @@ async function getLibraryPayload(musicDir: string, forceRefresh = false): Promis
     }
   }
 
-  const songs = await readLibrarySongs(musicDir);
-  return persistLibraryCache(musicDir, songs);
+  const pending = libraryScans.get(musicDir);
+  if (pending) return pending;
+  const scan = readLibrarySongs(musicDir).then((songs) => persistLibraryCache(musicDir, songs));
+  libraryScans.set(musicDir, scan);
+  try { return await scan; } finally { libraryScans.delete(musicDir); }
 }
 
 export async function startServer(options: StartServerOptions = {}): Promise<StartedServer> {
@@ -1569,7 +1589,6 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
   // Serve music directory
   let musicDir = options.initialMusicDir ?? path.join(process.cwd(), 'music');
-  let hasPrimedLibraryCache = false;
   let neteaseSession: NetEaseSessionState = {
     cookie: sanitizeNetEaseCookie(process.env.NETEASE_API_COOKIE),
     account: null,
@@ -2445,9 +2464,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   // Library endpoint: returns cached or freshly scanned metadata for the current folder.
   app.get("/api/music", async (req, res) => {
     try {
-      const shouldForceRefresh = isRefreshRequested(req.query.refresh) || !hasPrimedLibraryCache;
+      const shouldForceRefresh = isRefreshRequested(req.query.refresh);
       const payload = await getLibraryPayload(musicDir, shouldForceRefresh);
-      hasPrimedLibraryCache = true;
 
       res.json({
         folder: payload.folder,
@@ -2464,11 +2482,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     const { path: newPath } = req.body;
     if (typeof newPath === 'string' && fs.existsSync(newPath)) {
       musicDir = newPath;
-      hasPrimedLibraryCache = false;
 
       try {
         const payload = await getLibraryPayload(musicDir, true);
-        hasPrimedLibraryCache = true;
         res.json({ success: true, path: musicDir, songsCount: payload.songs.length });
       } catch {
         res.status(500).json({ error: "Failed to refresh music cache" });

@@ -41,6 +41,7 @@ export interface StoredPlaylist {
 }
 
 export interface StoredPreferences {
+  visualizerMode?: import('../lib/visualizer').VisualizerMode;
   version: number;
   language: AppLanguage;
   effect: 'blur' | 'streamer';

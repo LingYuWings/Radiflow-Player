@@ -2,7 +2,7 @@
   "name": "radiflow-player",
   "productName": "RadiFlow Player",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "RadiFlow Player is a desktop music player with dynamic backgrounds, synced lyrics, playlists, and local library support.",
   "type": "module",
   "main": "main.js",
@@ -10,7 +10,7 @@
     "dev": "tsx server.ts",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
     "build:renderer": "vite build",
-    "build:server": "esbuild server.ts --platform=node --target=node20 --format=esm --outfile=dist-electron/server.js",
+    "build:server": "esbuild server.ts --platform=node --target=node20 --format=esm --bundle --outfile=dist-electron/server.js --external:node:* --external:express --external:music-metadata --external:@neteasecloudmusicapienhanced/*",
     "build": "npm run build:renderer && npm run build:server",
     "electron:preview": "node scripts/electron-preview.mjs",
     "dist:win": "npm run build && electron-builder --win dir",
@@ -70,6 +70,10 @@
     "win": {
       "icon": "logo.ico",
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     }
   }
 }

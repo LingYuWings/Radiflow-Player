@@ -45,6 +45,8 @@ export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions)
       : `track:${normalizedTitle}::${normalizedArtist}`.toLowerCase();
     const cached = cacheRef.current.get(cacheKey);
     if (cached) {
+      cacheRef.current.delete(cacheKey);
+      cacheRef.current.set(cacheKey, cached);
       setLyrics(cached.lyrics);
       setIsLoadingLyrics(false);
       return;
@@ -102,6 +104,9 @@ export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions)
         // Cache the parsed representation rather than raw API data so future reads
         // avoid both network and parsing work.
         cacheRef.current.set(cacheKey, payload);
+        while (cacheRef.current.size > 64) {
+          cacheRef.current.delete(cacheRef.current.keys().next().value!);
+        }
         setLyrics(payload.lyrics);
       } catch (error) {
         if (controller.signal.aborted || isCancelled) return;

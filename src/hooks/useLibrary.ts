@@ -25,6 +25,7 @@ export function useLibrary(ipc: any) {
   const [hasLoadedLibrary, setHasLoadedLibrary] = useState(false);
   const [musicFolder, setMusicFolder] = useState<string | null>(null);
   const hasInitializedRef = useRef(false);
+  const requestRef = useRef(0);
 
   // Shared write path for both the initial bootstrap request and later refreshes.
   const applyLibraryPayload = useCallback((tracks: LibrarySongPayload[], folderOverride?: string | null) => {
@@ -35,6 +36,7 @@ export function useLibrary(ipc: any) {
   // The force-refresh flag tells the server to bypass its persisted cache and
   // rescan the selected music directory.
   const refreshLibrary = useCallback(async (options: RefreshLibraryOptions = {}) => {
+    const requestId = ++requestRef.current;
     setIsLoadingLibrary(true);
     try {
       const requestUrl = options.forceRefresh ? '/api/music?refresh=1' : '/api/music';
@@ -47,12 +49,24 @@ export function useLibrary(ipc: any) {
       const tracks = Array.isArray(payload.songs) ? payload.songs : [];
       const nextFolder = typeof payload.folder === 'string' ? payload.folder : null;
 
+      if (requestId !== requestRef.current) return;
       applyLibraryPayload(tracks, nextFolder);
+      setIsLoadingLibrary(false);
+      setHasLoadedLibrary(true);
+      if (!options.forceRefresh) {
+        const refreshed = await fetch('/api/music?refresh=1');
+        if (refreshed.ok) {
+          const fresh = await refreshed.json() as { folder?: string; songs?: LibrarySongPayload[] };
+          if (requestId === requestRef.current && Array.isArray(fresh.songs)) applyLibraryPayload(fresh.songs, fresh.folder);
+        }
+      }
     } catch (error) {
       console.error('Failed to fetch library:', error);
     } finally {
-      setIsLoadingLibrary(false);
-      setHasLoadedLibrary(true);
+      if (requestId === requestRef.current) {
+        setIsLoadingLibrary(false);
+        setHasLoadedLibrary(true);
+      }
     }
   }, [applyLibraryPayload]);
 

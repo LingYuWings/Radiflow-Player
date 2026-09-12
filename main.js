@@ -18,9 +18,23 @@ const DEFAULT_WINDOW_BACKGROUND_COLOR = '#050505';
 const TRANSPARENT_WINDOW_BACKGROUND_COLOR = '#00000000';
 const SHELL_PREFERENCES_FILE_NAME = 'shell-preferences.json';
 
+function resolvePortableExecutableDir() {
+  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
+  return typeof portableDir === 'string' && portableDir.trim() ? portableDir.trim() : null;
+}
+
+function getDefaultMusicPath() {
+  if (!app.isPackaged) {
+    return path.join(process.cwd(), 'music');
+  }
+
+  const packagedBaseDir = resolvePortableExecutableDir() || path.dirname(process.execPath);
+  return path.join(packagedBaseDir, 'music');
+}
+
 let mainWindow;
 let tray;
-let musicPath = path.join(process.cwd(), 'music');
+let musicPath = getDefaultMusicPath();
 let packagedServer;
 let packagedServerUrl;
 const startUrl = process.env.ELECTRON_START_URL;
@@ -106,8 +120,13 @@ function getShellPreferencesPath() {
 }
 
 function normalizeShellPreferences(value) {
+  const musicDirectory = typeof value?.musicDirectory === 'string' && value.musicDirectory.trim()
+    ? value.musicDirectory.trim()
+    : null;
+
   return {
     transparentWindow: Boolean(value?.transparentWindow),
+    musicDirectory,
   };
 }
 
@@ -129,6 +148,9 @@ function writeShellPreferences(value) {
 }
 
 let shellPreferences = readShellPreferences();
+musicPath = shellPreferences.musicDirectory && fs.existsSync(shellPreferences.musicDirectory)
+  ? shellPreferences.musicDirectory
+  : getDefaultMusicPath();
 
 // Windows 11 material APIs are version-gated; the renderer asks for support
 // information, but main.js is the only place that can safely decide and apply it.
@@ -463,6 +485,10 @@ ipcMain.handle('select-music-folder', async () => {
   });
   if (!result.canceled && result.filePaths.length > 0) {
     musicPath = result.filePaths[0];
+    shellPreferences = writeShellPreferences({
+      ...shellPreferences,
+      musicDirectory: musicPath,
+    });
     return musicPath;
   }
   return null;

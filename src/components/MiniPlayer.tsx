@@ -1,228 +1,46 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Play, Pause, SkipBack, SkipForward, Music, Volume2, VolumeX } from 'lucide-react';
-import { cn } from '../lib/utils';
-
-const TITLE_MARQUEE_PADDING_PX = 24;
-const TITLE_MARQUEE_THRESHOLD_PX = 1;
-
+import React, { useRef, useState } from 'react';
+import { motion } from 'motion/react';
+import { Play, Pause, SkipBack, SkipForward, Music, Volume2, VolumeX, ListMusic, ChevronUp, LoaderCircle } from 'lucide-react';
+import { PlaybackSlider, formatPlaybackTime } from './PlaybackSlider';
+import type { PlaybackStatus } from '../lib/audioPlayback';
+import { useAudioClock } from '../hooks/useAudioClock';
 interface MiniPlayerProps {
-  hasActiveSong: boolean;
-  isPlaying: boolean;
-  onTogglePlay: () => void;
-  onNext: () => void;
-  onPrev: () => void;
-  title: string;
-  artist: string;
-  cover?: string;
-  onClick: () => void;
-  volume: number;
-  onVolumeChange: (v: number) => void;
-  emptyActionLabel: string;
+  audioRef?: React.RefObject<HTMLAudioElement | null>;
+  hasActiveSong: boolean; isPlaying: boolean; onTogglePlay: () => void; onNext: () => void; onPrev: () => void;
+  title: string; artist: string; cover?: string; onClick: () => void; volume: number;
+  onVolumeChange: (value: number) => void; emptyActionLabel: string;
+  currentTime: number; duration: number; onSeek: (time: number) => void;
+  onToggleQueue: () => void; showQueue: boolean; queueCount: number; language: 'zh-CN' | 'en-US'; status: PlaybackStatus;
 }
-
-export const MiniPlayer: React.FC<MiniPlayerProps> = ({
-  hasActiveSong,
-  isPlaying,
-  onTogglePlay,
-  onNext,
-  onPrev,
-  title,
-  artist,
-  cover,
-  onClick,
-  volume,
-  onVolumeChange,
-  emptyActionLabel,
-}) => {
-  const [showVolumePopover, setShowVolumePopover] = useState(false);
-  const volumeHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isDraggingVolume = useRef(false);
-  const titleContainerRef = useRef<HTMLDivElement>(null);
-  const titleTextRef = useRef<HTMLHeadingElement>(null);
-  const [isTitleOverflowing, setIsTitleOverflowing] = useState(false);
-  const [titleMarqueeDistance, setTitleMarqueeDistance] = useState(0);
-
-  // The popover lingers briefly after hover-out so volume adjustments do not feel
-  // fragile, while dragging still pins it open.
-  useEffect(() => () => {
-    if (volumeHideTimerRef.current) clearTimeout(volumeHideTimerRef.current);
-  }, []);
-
-  useEffect(() => {
-    const container = titleContainerRef.current;
-    const titleElement = titleTextRef.current;
-    if (!container || !titleElement) {
-      return;
-    }
-
-    const updateTitleMarqueeState = () => {
-      const overflow = Math.max(0, titleElement.scrollWidth - container.clientWidth);
-      const shouldAnimate = overflow > TITLE_MARQUEE_THRESHOLD_PX;
-
-      setIsTitleOverflowing(shouldAnimate);
-      setTitleMarqueeDistance(shouldAnimate ? overflow + TITLE_MARQUEE_PADDING_PX : 0);
-    };
-
-    updateTitleMarqueeState();
-
-    if (typeof ResizeObserver === 'undefined') {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => updateTitleMarqueeState());
-    observer.observe(container);
-    observer.observe(titleElement);
-
-    return () => observer.disconnect();
-  }, [title]);
-
-  const titleMarqueeStyle = isTitleOverflowing
-    ? ({ '--marquee-distance': `-${titleMarqueeDistance}px` } as React.CSSProperties)
-    : undefined;
-
-  const openVolume = () => {
-    if (volumeHideTimerRef.current) clearTimeout(volumeHideTimerRef.current);
-    setShowVolumePopover(true);
-  };
-
-  const scheduleCloseVolume = () => {
-    volumeHideTimerRef.current = setTimeout(() => {
-      if (!isDraggingVolume.current) setShowVolumePopover(false);
-    }, 300);
-  };
-
-  const handleVolumeTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.stopPropagation();
-    isDraggingVolume.current = true;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const rect = e.currentTarget.getBoundingClientRect();
-    onVolumeChange(Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height)));
-  };
-
-  const handleVolumeTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDraggingVolume.current) return;
-    e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    onVolumeChange(Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height)));
-  };
-
-  const handleVolumeTrackPointerUp = () => {
-    isDraggingVolume.current = false;
-    scheduleCloseVolume();
-  };
-
-  return (
-    <motion.div
-      initial={{ y: 100, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      exit={{ y: 100, opacity: 0 }}
-      className="fixed left-1/2 bottom-4 z-100 w-[calc(100vw-2rem)] max-w-[24rem] -translate-x-1/2 lg:max-w-104"
-    >
-      <div 
-        className="bg-black/40 backdrop-blur-2xl customizable-backdrop-medium border border-white/10 rounded-2xl p-3 flex items-center gap-4 shadow-2xl cursor-pointer group hover:bg-black/50 transition-all"
-        onClick={onClick}
-      >
-        <div className="w-12 h-12 rounded-lg overflow-hidden bg-white/5 shrink-0 shadow-lg">
-          {cover ? (
-            <img src={cover} alt="" className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center">
-              <Music size={20} className="text-white/20" />
-            </div>
-          )}
-        </div>
-
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          {/* Match the main player behavior: only the song title runs marquee. */}
-          <div ref={titleContainerRef} className="marquee-container" style={titleMarqueeStyle}>
-            <h4
-              ref={titleTextRef}
-              className={cn(
-                'text-sm font-bold text-white',
-                isTitleOverflowing ? 'marquee-text' : 'block'
-              )}
-            >
-              {title}
-            </h4>
-          </div>
-          <p className="text-xs text-white/40 truncate">{artist}</p>
-        </div>
-
-        <div className="flex items-center gap-4" onClick={(e) => e.stopPropagation()}>
-          {hasActiveSong ? (
-            <>
-              <div className="flex items-center gap-1">
-                <button 
-                  onClick={onPrev}
-                  className="p-2 text-white/40 hover:text-white transition-colors"
-                >
-                  <SkipBack size={18} fill="currentColor" />
-                </button>
-                <button 
-                  onClick={onTogglePlay}
-                  className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-black hover:scale-105 transition-transform"
-                >
-                  {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
-                </button>
-                <button 
-                  onClick={onNext}
-                  className="p-2 text-white/40 hover:text-white transition-colors"
-                >
-                  <SkipForward size={18} fill="currentColor" />
-                </button>
-              </div>
-
-              <div className="hidden sm:flex items-center gap-2">
-                <div
-                  className="relative"
-                  onMouseEnter={openVolume}
-                  onMouseLeave={scheduleCloseVolume}
-                  onClick={e => e.stopPropagation()}
-                >
-                  <AnimatePresence>
-                    {showVolumePopover && (
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.92, y: 4 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.92, y: 4 }}
-                        transition={{ duration: 0.15 }}
-                        className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 flex flex-col items-center gap-1.5 px-3 pt-3 pb-2 rounded-xl bg-black/70 backdrop-blur-xl border border-white/10 shadow-xl z-10"
-                        onMouseEnter={openVolume}
-                        onMouseLeave={scheduleCloseVolume}
-                      >
-                        <span className="text-[9px] font-mono text-white/50 tabular-nums">{Math.round(volume * 100)}</span>
-                        <div
-                          className="relative w-1.5 h-20 bg-white/20 rounded-full cursor-pointer touch-none select-none"
-                          onPointerDown={handleVolumeTrackPointerDown}
-                          onPointerMove={handleVolumeTrackPointerMove}
-                          onPointerUp={handleVolumeTrackPointerUp}
-                        >
-                          <div
-                            className="absolute bottom-0 left-0 w-full rounded-full bg-white"
-                            style={{ height: `${volume * 100}%` }}
-                          />
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                  <button
-                    onClick={() => onVolumeChange(volume === 0 ? 0.8 : 0)}
-                    className="p-2 text-white/40 hover:text-white transition-colors"
-                  >
-                    {volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                  </button>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-mono uppercase tracking-[0.18em] text-white/50">
-              {emptyActionLabel}
-            </div>
-          )}
-        </div>
+export function MiniPlayer(props: MiniPlayerProps) {
+  const { hasActiveSong, isPlaying, title, artist, cover, volume, duration, status } = props;
+  const currentTime = useAudioClock(props.audioRef, props.currentTime);
+  const [showVolume, setShowVolume] = useState(false);
+  const previousVolume = useRef(0.8);
+  const busy = status === 'loading' || status === 'buffering';
+  const t = (cn: string, en: string) => props.language === 'zh-CN' ? cn : en;
+  return <motion.div initial={{ y: 24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 24, opacity: 0 }} className="rf-player-dock rf-glass">
+    <div className="rf-dock-row">
+      <button className="rf-dock-track" onClick={props.onClick} title={t('展开播放器', 'Expand player')}>
+        <span className="rf-dock-art">{cover ? <img src={cover} alt="" /> : <Music size={24} />}</span>
+        <span className="min-w-0 text-left"><span className="block truncate text-sm font-semibold text-white" title={title}>{title}</span><span className="block truncate text-xs text-white/65 mt-1">{hasActiveSong ? artist : props.emptyActionLabel}</span></span>
+      </button>
+      <div className="rf-dock-controls">
+        <button className="rf-icon-button" disabled={!hasActiveSong} onClick={props.onPrev} aria-label={t('上一首', 'Previous')} title={t('上一首', 'Previous')}><SkipBack size={19} fill="currentColor" /></button>
+        <button className="rf-play-button" disabled={!hasActiveSong} onClick={props.onTogglePlay} aria-label={busy ? t('取消加载', 'Cancel loading') : isPlaying ? t('暂停', 'Pause') : t('播放', 'Play')}>
+          {busy ? <LoaderCircle className="animate-spin" size={21} /> : isPlaying ? <Pause size={21} fill="currentColor" /> : <Play size={21} fill="currentColor" />}
+        </button>
+        <button className="rf-icon-button" disabled={!hasActiveSong} onClick={props.onNext} aria-label={t('下一首', 'Next')} title={t('下一首', 'Next')}><SkipForward size={19} fill="currentColor" /></button>
       </div>
-    </motion.div>
-  );
-};
+      <div className="rf-dock-tools">
+        <div className="relative" onKeyDown={(event) => { if (event.key === 'Escape') setShowVolume(false); }}>
+          <button className="rf-icon-button" onClick={() => setShowVolume(!showVolume)} aria-expanded={showVolume} aria-label={t('音量', 'Volume')} title={t('音量', 'Volume')}>{volume === 0 ? <VolumeX size={19} /> : <Volume2 size={19} />}</button>
+          {showVolume && <div className="rf-volume-popover rf-glass"><div className="flex justify-between items-center text-xs text-white/75"><button onClick={() => { if (volume > 0) previousVolume.current = volume; props.onVolumeChange(volume === 0 ? previousVolume.current : 0); }}>{volume === 0 ? t('取消静音', 'Unmute') : t('静音', 'Mute')}</button><span>{Math.round(volume * 100)}%</span></div><PlaybackSlider label={t('音量', 'Volume')} value={volume} onChange={props.onVolumeChange} /></div>}
+        </div>
+        <button className="rf-icon-button rf-queue-toggle" onClick={props.onToggleQueue} aria-expanded={props.showQueue} aria-label={t('播放队列', 'Play queue')} title={t('播放队列', 'Play queue')}><ListMusic size={19} /><span className="text-[10px] tabular-nums">{props.queueCount}</span></button>
+        <button className="rf-icon-button rf-expand" onClick={props.onClick} aria-label={t('展开播放器', 'Expand player')} title={t('展开播放器', 'Expand player')}><ChevronUp size={19} /></button>
+      </div>
+    </div>
+    <div className="rf-dock-progress"><span>{formatPlaybackTime(currentTime)}</span><PlaybackSlider value={currentTime} max={duration} onChange={props.onSeek} label={t('播放进度', 'Playback position')} disabled={!hasActiveSong} time /><span>{formatPlaybackTime(duration)}</span></div>
+  </motion.div>;
+}

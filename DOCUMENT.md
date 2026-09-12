@@ -120,8 +120,8 @@ flowchart LR
 ## 4.2 生产环境（打包）启动流程
 
 1. 执行 `npm run build`，Vite 生成 `dist/`（base: './' 相对路径），esbuild 生成 `dist-electron/server.js`。
-2. 执行 `npx electron-builder --win dir portable nsis`，产物在 `release/`。
-3. 打包应用启动时，Electron 主进程调用 `startPackagedLocalServer()`，把内嵌的 `dist-electron/server.js` 以子进程方式启动。
+2. 执行 `npx electron-builder --win dir portable nsis`，产物在 `release/`。NSIS 安装包使用向导模式而非 one-click，用户可自行选择安装目录。
+3. 打包应用启动时，Electron 主进程会先恢复上次选择的媒体库目录；若是 portable 单文件版且尚未选择过目录，则默认使用可执行文件所在目录下的 `music/`，避免解包临时目录导致缓存与收藏丢失。随后调用 `startPackagedLocalServer()`，把内嵌的 `dist-electron/server.js` 以子进程方式启动。
 4. Express 服务优先绑定稳定端口（见"端口稳定性"章节），产生 `http://127.0.0.1:PORT/`。
 5. 主进程窗口加载上述 URL，前端通过 `/api/*` 访问本地服务。
 
@@ -148,6 +148,7 @@ npm run preview
 
 # 打包
 npx electron-builder --win dir portable nsis
+npx electron-builder --win nsis
 ```
 
 ---
@@ -554,7 +555,7 @@ Electron 的 `app.getPath('userData')` 路径用于跨重启的系统级持久�
 
 | 文件 | 用途 |
 |---|---|
-| `shell-preferences.json` | 窗口壳层偏好（transparentWindow 布尔值） |
+| `shell-preferences.json` | 窗口壳层偏好（transparentWindow）与上次选择的媒体库目录（musicDirectory） |
 | `server-port.json` | 上次成功绑定的 Express 端口号，确保 localStorage origin 跨启动一致 |
 
 ---

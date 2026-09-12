@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 // @ts-ignore
 import { getPalette } from 'colorthief';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 
 interface BackgroundProps {
   imageSrc?: string;
@@ -182,6 +182,7 @@ const BLOB_CONFIGS = [
 ];
 
 export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, customBackground = null, transparentBackground = false }) => {
+  const reducedMotion = useReducedMotion();
   const [streamerLayers, setStreamerLayers] = useState<StreamerPaletteState[]>([
     { key: 'default', colors: DEFAULT_STREAMER_COLORS },
   ]);
@@ -301,19 +302,19 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.9, ease: 'easeInOut' }}
               >
-                {BLOB_CONFIGS.map((cfg, i) => (
+                {BLOB_CONFIGS.slice(0, 6).map((cfg, i) => (
                   <div key={`${layer.key}-${i}`} className="absolute" style={{ left: cfg.left, top: cfg.top }}>
                     <motion.div
                       className="absolute rounded-full pointer-events-none"
                       style={{
-                        width: '35vw',
-                        height: '35vw',
-                        marginLeft: '-17.5vw',
-                        marginTop: '-17.5vw',
-                        background: `radial-gradient(circle, ${layer.colors[i % layer.colors.length] || layer.colors[0]} 0%, transparent 60%)`,
+                        width: '65vw',
+                        height: '65vw',
+                        marginLeft: '-32.5vw',
+                        marginTop: '-32.5vw',
+                        background: `radial-gradient(circle, ${layer.colors[i % layer.colors.length] || layer.colors[0]} 0%, transparent 70%)`,
                         opacity: 0.85,
                       }}
-                      animate={{ x: cfg.xKeys, y: cfg.yKeys }}
+                      animate={reducedMotion ? { x: 0, y: 0 } : { x: cfg.xKeys, y: cfg.yKeys }}
                       transition={{ duration: cfg.duration * STREAMER_SPEED_MULTIPLIER, repeat: Infinity, ease: 'easeInOut' }}
                     />
                   </div>
@@ -321,7 +322,6 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
               </motion.div>
             ))}
           </AnimatePresence>
-          <div className="absolute inset-0 backdrop-blur-[100px]" />
         </div>
       )}
       {!transparentBackground && <div className="absolute inset-0 bg-black/40" />}
