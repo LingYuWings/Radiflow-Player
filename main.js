@@ -4,6 +4,8 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs';
 import os from 'os';
 
+// Electron main process: owns the native shell, window lifecycle, IPC bridge,
+// and the packaged local HTTP server used by the production build.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const APP_NAME = 'RadiFlow Player';
@@ -16,9 +18,23 @@ const DEFAULT_WINDOW_BACKGROUND_COLOR = '#050505';
 const TRANSPARENT_WINDOW_BACKGROUND_COLOR = '#00000000';
 const SHELL_PREFERENCES_FILE_NAME = 'shell-preferences.json';
 
+function resolvePortableExecutableDir() {
+  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
+  return typeof portableDir === 'string' && portableDir.trim() ? portableDir.trim() : null;
+}
+
+function getDefaultMusicPath() {
+  if (!app.isPackaged) {
+    return path.join(process.cwd(), 'music');
+  }
+
+  const packagedBaseDir = resolvePortableExecutableDir() || path.dirname(process.execPath);
+  return path.join(packagedBaseDir, 'music');
+}
+
 let mainWindow;
 let tray;
-let musicPath = path.join(process.cwd(), 'music');
+let musicPath = getDefaultMusicPath();
 let packagedServer;
 let packagedServerUrl;
 const startUrl = process.env.ELECTRON_START_URL;
@@ -26,6 +42,8 @@ const isDev = !app.isPackaged;
 const shouldOpenDevTools = isDev && process.env.ELECTRON_DISABLE_DEVTOOLS !== 'true' && !startUrl;
 const customUserDataPath = process.env.ELECTRON_USER_DATA_DIR;
 
+// Resolve the best available application icon once at startup so tray, window,
+// and installer builds stay visually consistent without duplicating lookup logic.
 const resolveAppIcon = () => {
   const iconCandidates = [
     path.join(__dirname, 'logo.ico'),
@@ -54,6 +72,8 @@ const THUMBAR_ICON_PAUSE  = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAHkl
 const THUMBAR_ICON_PREV   = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAASklEQVR4nOXQQQoAIAhEUe9/aduGiM04RVB/rQ/R7O98itnZAkKzKOghCYxYG8ygNlhhNLjCKBDB7l545IcI2gIrWAIzVAbZ2ccbRwXyHOtSMyYAAAAASUVORK5CYII=';
 const THUMBAR_ICON_NEXT   = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAASklEQVR4nGNgGAX/gYBYdTBAlEKqG0hIIVkG4lNMtoG4NFFsILpGqhiIrJlqBhJy+cC6EJc6sgzEp44kA4lRR7SB1FBH/bw8/AEA5YzCTPEG4HoAAAAASUVORK5CYII=';
 
+// Windows taskbar controls are a shell-only concern, so they stay in main.js
+// and are updated from renderer playback state via IPC.
 function updateThumbarButtons(isPlaying, hasActiveSong) {
   if (!mainWindow || process.platform !== 'win32') return;
   const flags = hasActiveSong ? [] : ['disabled'];
@@ -93,13 +113,20 @@ if (customUserDataPath) {
   app.setPath('userData', customUserDataPath);
 }
 
+// Shell preferences are app-level state and intentionally live under userData
+// so they survive restarts independently of the selected music library.
 function getShellPreferencesPath() {
   return path.join(app.getPath('userData'), SHELL_PREFERENCES_FILE_NAME);
 }
 
 function normalizeShellPreferences(value) {
+  const musicDirectory = typeof value?.musicDirectory === 'string' && value.musicDirectory.trim()
+    ? value.musicDirectory.trim()
+    : null;
+
   return {
     transparentWindow: Boolean(value?.transparentWindow),
+    musicDirectory,
   };
 }
 
@@ -121,7 +148,12 @@ function writeShellPreferences(value) {
 }
 
 let shellPreferences = readShellPreferences();
+musicPath = shellPreferences.musicDirectory && fs.existsSync(shellPreferences.musicDirectory)
+  ? shellPreferences.musicDirectory
+  : getDefaultMusicPath();
 
+// Windows 11 material APIs are version-gated; the renderer asks for support
+// information, but main.js is the only place that can safely decide and apply it.
 function getBackgroundMaterialSupport() {
   const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : os.release();
   const buildSegment = systemVersion.split('.').at(-1) ?? '0';
@@ -177,6 +209,8 @@ function setWindowBackgroundMaterial(mode = 'none') {
   }
 }
 
+// Frameless rounded corners on Windows are emulated by shaping the native window.
+// The shape is rebuilt on resize / maximize transitions so the shell matches the UI.
 function buildRoundedWindowShape(width, height, radius) {
   const safeWidth = Math.max(1, Math.floor(width));
   const safeHeight = Math.max(1, Math.floor(height));
@@ -223,6 +257,8 @@ const PACKAGED_SERVER_PREFERRED_PORT = 37531;
 const PACKAGED_SERVER_PORT_RANGE = 20;
 const PACKAGED_SERVER_PORT_FILE = 'server-port.json';
 
+// Persist the last successful packaged server port so the production app can
+// reuse a stable origin and keep localStorage-backed preferences available.
 function readPackagedServerPort() {
   try {
     const raw = fs.readFileSync(path.join(app.getPath('userData'), PACKAGED_SERVER_PORT_FILE), 'utf8');
@@ -242,6 +278,8 @@ function writePackagedServerPort(port) {
   }
 }
 
+// Production builds serve the renderer from a local HTTP server started here.
+// The retry loop favors deterministic ports first, then falls back to a random port.
 async function startPackagedLocalServer() {
   if (packagedServerUrl) {
     return packagedServerUrl;
@@ -295,6 +333,8 @@ async function startPackagedLocalServer() {
   throw lastError ?? new Error('Could not find an available port for the packaged server.');
 }
 
+// Window creation stays focused on native shell concerns only: startup URL
+// selection, frameless chrome behavior, and shell-specific event forwarding.
 function createWindow() {
   const useTransparentWindow = shellPreferences.transparentWindow;
 
@@ -369,6 +409,8 @@ function createWindow() {
   });
 }
 
+// Tray controls mirror the most important playback commands so the app remains
+// usable when the main window is hidden or de-focused.
 function createTray() {
   if (!appIcon) {
     return;
@@ -386,6 +428,8 @@ function createTray() {
   tray.setContextMenu(contextMenu);
 }
 
+// Media keys are registered centrally because Electron only exposes them at the
+// main-process level.
 function registerGlobalShortcuts() {
   globalShortcut.register('MediaPlayPause', () => {
     mainWindow?.webContents.send('player-control', 'toggle-play');
@@ -433,13 +477,18 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
 });
 
-// IPC Handlers
+// IPC handlers expose only platform capabilities. Filesystem writes, network I/O,
+// and playback state computation remain in the existing main/server/renderer split.
 ipcMain.handle('select-music-folder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory']
   });
   if (!result.canceled && result.filePaths.length > 0) {
     musicPath = result.filePaths[0];
+    shellPreferences = writeShellPreferences({
+      ...shellPreferences,
+      musicDirectory: musicPath,
+    });
     return musicPath;
   }
   return null;

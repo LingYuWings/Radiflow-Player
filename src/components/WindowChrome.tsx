@@ -40,6 +40,7 @@ export const WindowChrome: React.FC<WindowChromeProps> = ({
         {(actionSlot || showWindowControls) && (
           <div className="flex items-center gap-2" style={noDragStyle}>
             {actionSlot}
+            {showWindowControls && <>
             <button
               type="button"
               onClick={onMinimize}
@@ -67,6 +68,7 @@ export const WindowChrome: React.FC<WindowChromeProps> = ({
             >
               <X size={16} />
             </button>
+            </>}
           </div>
         )}
       </div>

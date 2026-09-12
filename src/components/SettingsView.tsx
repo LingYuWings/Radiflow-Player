@@ -1,10 +1,13 @@
 import React, { useRef } from 'react';
 import { motion } from 'motion/react';
-import { FolderOpen, FolderPlus, Globe2, ImagePlus, Info, Library, Monitor, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
+import { Disc3, FolderOpen, FolderPlus, Globe2, ImagePlus, Info, Library, Monitor, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AppLanguage, SettingsCopy } from '../lib/copy';
+import { VISUALIZER_MODES, VisualizerMode } from '../lib/visualizer';
 
 interface SettingsViewProps {
+  visualizerMode: VisualizerMode;
+  onVisualizerModeChange: (mode: VisualizerMode) => void;
   copy: SettingsCopy;
   language: AppLanguage;
   onLanguageChange: (language: AppLanguage) => void;
@@ -14,6 +17,20 @@ interface SettingsViewProps {
   onOpenFolder: () => void;
   onRefreshLibrary: () => void;
   isRefreshingLibrary: boolean;
+  neteaseCookie: string;
+  neteaseStatusText: string;
+  neteaseStatusDetail?: string | null;
+  neteaseAvatarUrl?: string | null;
+  neteaseQrImage?: string | null;
+  neteaseQrStatusText?: string | null;
+  isNetEaseLoggedIn: boolean;
+  isSavingNetEaseSession: boolean;
+  isLoadingNetEasePlaylists: boolean;
+  onNetEaseCookieChange: (value: string) => void;
+  onNetEaseLoginWithCookie: () => void;
+  onNetEaseLogout: () => void;
+  onNetEaseStartQrLogin: () => void;
+  onNetEaseRefreshPlaylists: () => void;
   effect: 'blur' | 'streamer';
   backgroundSource: 'default' | 'custom' | 'transparent';
   hasCustomBackground: boolean;
@@ -48,6 +65,8 @@ const SettingsCard: React.FC<{
 );
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
+  visualizerMode,
+  onVisualizerModeChange,
   copy,
   language,
   onLanguageChange,
@@ -57,6 +76,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onOpenFolder,
   onRefreshLibrary,
   isRefreshingLibrary,
+  neteaseCookie,
+  neteaseStatusText,
+  neteaseStatusDetail,
+  neteaseAvatarUrl,
+  neteaseQrImage,
+  neteaseQrStatusText,
+  isNetEaseLoggedIn,
+  isSavingNetEaseSession,
+  isLoadingNetEasePlaylists,
+  onNetEaseCookieChange,
+  onNetEaseLoginWithCookie,
+  onNetEaseLogout,
+  onNetEaseStartQrLogin,
+  onNetEaseRefreshPlaylists,
   effect,
   backgroundSource,
   hasCustomBackground,
@@ -169,6 +202,89 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <p className="text-sm text-white/40">{copy.refreshDescription}</p>
             </div>
           </SettingsCard>
+
+          <SettingsCard title={copy.netease} icon={<Disc3 size={18} />}>
+            <div className="space-y-5">
+              <div>
+                <p className="text-sm font-semibold text-white">{neteaseStatusText}</p>
+                <p className="text-sm text-white/45 mt-1">{neteaseStatusDetail || copy.neteaseDescription}</p>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 flex items-center gap-4">
+                <div className="w-14 h-14 rounded-2xl overflow-hidden bg-white/8 shrink-0 flex items-center justify-center">
+                  {neteaseAvatarUrl ? (
+                    <img src={neteaseAvatarUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    <Disc3 size={18} className="text-white/35" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-white break-all">{neteaseStatusText}</p>
+                  <p className="text-xs text-white/45 mt-1 break-all">{copy.neteaseQrHint}</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-semibold text-white">{copy.neteaseCookie}</p>
+                </div>
+                <textarea
+                  value={neteaseCookie}
+                  onChange={(event) => onNetEaseCookieChange(event.target.value)}
+                  placeholder={copy.neteaseCookiePlaceholder}
+                  rows={3}
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/25 focus:outline-none focus:bg-white/10 focus:border-white/20 transition-all resize-y min-h-24"
+                />
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={onNetEaseLoginWithCookie}
+                    disabled={isSavingNetEaseSession}
+                    className="rounded-2xl px-4 py-3 bg-white/5 border border-white/10 text-white/75 text-sm font-semibold hover:bg-white/10 hover:text-white transition-all disabled:opacity-40"
+                  >
+                    {copy.neteaseLoginWithCookie}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onNetEaseStartQrLogin}
+                    disabled={isSavingNetEaseSession}
+                    className="rounded-2xl px-4 py-3 bg-white/5 border border-white/10 text-white/75 text-sm font-semibold hover:bg-white/10 hover:text-white transition-all disabled:opacity-40"
+                  >
+                    {copy.neteaseStartQrLogin}
+                  </button>
+                </div>
+              </div>
+
+              {neteaseQrImage && (
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-4 space-y-3">
+                  <div className="flex items-center justify-center rounded-2xl bg-white p-4">
+                    <img src={neteaseQrImage} alt="NetEase QR" className="w-44 h-44 object-contain" />
+                  </div>
+                  <p className="text-sm text-white/55 text-center">{neteaseQrStatusText || copy.neteaseQrHint}</p>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={onNetEaseRefreshPlaylists}
+                  disabled={!isNetEaseLoggedIn || isLoadingNetEasePlaylists}
+                  className="rounded-2xl px-4 py-3 bg-white/5 border border-white/10 text-white/75 text-sm font-semibold hover:bg-white/10 hover:text-white transition-all disabled:opacity-40 flex items-center gap-2"
+                >
+                  <RefreshCw size={16} className={cn(isLoadingNetEasePlaylists && 'animate-spin')} />
+                  {copy.neteaseRefreshPlaylists}
+                </button>
+                <button
+                  type="button"
+                  onClick={onNetEaseLogout}
+                  disabled={!isNetEaseLoggedIn || isSavingNetEaseSession}
+                  className="rounded-2xl px-4 py-3 bg-white/5 border border-white/10 text-white/75 text-sm font-semibold hover:bg-white/10 hover:text-white transition-all disabled:opacity-40"
+                >
+                  {copy.neteaseLogout}
+                </button>
+              </div>
+            </div>
+          </SettingsCard>
         </div>
 
         <div className="space-y-6">
@@ -260,10 +376,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 )}
               </div>
 
-              {hasCustomBackground && backgroundSource === 'custom' && (
+              {backgroundSource !== 'transparent' && (
                 <div className="space-y-3 pt-2">
                   <div className="flex items-center justify-between gap-4">
-                    <p className="text-sm font-semibold text-white">{copy.customBackgroundBlur}</p>
+                    <p className="text-sm font-semibold text-white">{language === 'zh-CN' ? '卡片背景模糊' : 'Card background blur'}</p>
                     <span className="text-xs font-mono uppercase tracking-[0.18em] text-white/45">{customBackgroundBlur}px</span>
                   </div>
                   <input
@@ -272,6 +388,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     max="120"
                     step="1"
                     value={customBackgroundBlur}
+                    aria-label={language === 'zh-CN' ? '卡片背景模糊' : 'Card background blur'}
                     onChange={(event) => onCustomBackgroundBlurChange(Number.parseInt(event.target.value, 10))}
                     className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer accent-white"
                   />
@@ -332,6 +449,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 </>
               )}
+            </div>
+          </SettingsCard>
+
+          <SettingsCard title={language === 'zh-CN' ? '音频可视化' : 'Audio visualization'} icon={<Sparkles size={18} />}>
+            <p className="text-sm text-white/55 mb-4">{language === 'zh-CN' ? '默认使用经典频谱。关闭后不绘制动画，不影响音乐播放。' : 'Classic spectrum is the default. Turning it off does not affect playback.'}</p>
+            <div className="grid grid-cols-2 gap-3" role="group" aria-label={language === 'zh-CN' ? '可视化效果' : 'Visualization effect'}>
+              {VISUALIZER_MODES.map(mode => <button key={mode} type="button" aria-pressed={visualizerMode === mode} onClick={() => onVisualizerModeChange(mode)} className={cn('rounded-2xl px-4 py-3 text-sm border transition-colors', visualizerMode === mode ? 'bg-white text-black border-white' : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10')}>
+                {({ spectrum: ['经典频谱', 'Classic spectrum'], waveform: ['波形', 'Waveform'], mirror: ['镜像频谱', 'Mirrored spectrum'], off: ['关闭', 'Off'] })[mode][language === 'zh-CN' ? 0 : 1]}
+              </button>)}
             </div>
           </SettingsCard>
 

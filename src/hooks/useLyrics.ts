@@ -15,6 +15,8 @@ interface UseLyricsOptions {
   fileUrl?: string;
 }
 
+// This hook reacts to the active song, asks the local server for lyrics, and
+// caches the parsed result in memory so repeat openings stay instantaneous.
 export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions) {
   const [lyrics, setLyrics] = useState<LyricLine[]>([]);
   const [isLoadingLyrics, setIsLoadingLyrics] = useState(false);
@@ -36,11 +38,15 @@ export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions)
       return;
     }
 
+    // Prefer file identity when available so the same local track does not split
+    // into multiple cache entries after metadata edits.
     const cacheKey = normalizedFileUrl
       ? `file:${normalizedFileUrl}`
       : `track:${normalizedTitle}::${normalizedArtist}`.toLowerCase();
     const cached = cacheRef.current.get(cacheKey);
     if (cached) {
+      cacheRef.current.delete(cacheKey);
+      cacheRef.current.set(cacheKey, cached);
       setLyrics(cached.lyrics);
       setIsLoadingLyrics(false);
       return;
@@ -49,6 +55,8 @@ export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions)
     const controller = new AbortController();
     let isCancelled = false;
 
+    // The server already resolves cache/remote/manual fallback order. The hook
+    // only needs to normalize the response into a render-ready lyric structure.
     const fetchLyrics = async () => {
       setIsLoadingLyrics(true);
       try {
@@ -65,7 +73,7 @@ export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions)
         });
         const lyricData = await lyricResponse.json();
         const lyricText = lyricData.data?.lrc || lyricData.data?.lyric;
-        const translatedLyricText = lyricData.data?.tlyric || lyricData.data?.trans;
+        const translatedLyricText = lyricData.data?.ytlrc || lyricData.data?.tlyric || lyricData.data?.trans;
         const yrcText = lyricData.data?.yrc;
 
         if (lyricData.code !== 200 || (!lyricText && !yrcText)) {
@@ -75,6 +83,9 @@ export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions)
         let parsedLyrics: LyricLine[] = [];
         if (yrcText) {
           parsedLyrics = parseYRC(yrcText);
+          if (parsedLyrics.length === 0 && lyricText) {
+            parsedLyrics = parseLRC(lyricText);
+          }
           if (translatedLyricText) {
             parsedLyrics = mergeLyrics(parsedLyrics, parseLRC(translatedLyricText));
           }
@@ -89,7 +100,13 @@ export function useLyrics({ enabled, title, artist, fileUrl }: UseLyricsOptions)
           rawText: yrcText || lyricText || EMPTY_LRC_TEXT,
           lyrics: parsedLyrics,
         };
+
+        // Cache the parsed representation rather than raw API data so future reads
+        // avoid both network and parsing work.
         cacheRef.current.set(cacheKey, payload);
+        while (cacheRef.current.size > 64) {
+          cacheRef.current.delete(cacheRef.current.keys().next().value!);
+        }
         setLyrics(payload.lyrics);
       } catch (error) {
         if (controller.signal.aborted || isCancelled) return;

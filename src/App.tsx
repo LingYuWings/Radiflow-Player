@@ -1,26 +1,31 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Disc, ListMusic, Maximize2, Minimize2, Music, Pencil, Plus, Search, Settings2, SlidersHorizontal, Trash2, User } from 'lucide-react';
-import { AnimatePresence, motion } from 'motion/react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Disc, Heart, ListMusic, Maximize2, Minimize2, Music, Pencil, Plus, Search, Settings2, SlidersHorizontal, Trash2, User } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Background } from './components/Background';
 import { EQView } from './components/EQView';
-import { Library, LibrarySection, PlaylistCollection } from './components/Library';
+import { Library, LibrarySearchNavigationRequest, LibrarySection, PlaylistCollection } from './components/Library';
 import { useLibrary } from './hooks/useLibrary';
 import { useLyrics } from './hooks/useLyrics';
+import { useNetEase } from './hooks/useNetEase';
 import { LyricsView } from './components/LyricsView';
 import { MiniPlayer } from './components/MiniPlayer';
 import { PlayerControls, LoopMode } from './components/PlayerControls';
 import { Playlist } from './components/Playlist';
 import { SettingsView } from './components/SettingsView';
+import { normalizeVisualizerMode, VisualizerMode } from './lib/visualizer';
 import { AppLogo } from './components/AppLogo';
 import { WindowChrome } from './components/WindowChrome';
 import { getEQCopy, getSettingsCopy, AppLanguage } from './lib/copy';
 import { cn } from './lib/utils';
+import { createAudioPlayback, PlaybackStatus } from './lib/audioPlayback';
 import {
   AppSection,
   createSongIdentity,
   EMPTY_SONG,
+  getNetEaseSongIdFromSong,
   getPersistedSongKey,
   PlaylistModalState,
+  PlaylistModalScope,
   rebuildPlaylistCollections,
   Song,
   StoredPlaybackSession,
@@ -28,19 +33,26 @@ import {
   StoredPreferences,
 } from './types/player';
 
+// App is the renderer orchestration center: it owns global playback state,
+// shell IPC integration, persistence, and the library/player view handoff.
 const ipc = (window as any).require ? (window as any).require('electron').ipcRenderer : null;
 
 const APP_NAME = 'RadiFlow Player';
-const APP_VERSION = '0.1.2';
+const APP_VERSION = '0.5.0';
 const PLAYLIST_STORAGE_KEY = 'apple-music-style-player.playlists';
 const PREFERENCES_STORAGE_KEY = 'apple-music-style-player.preferences';
 const PREFERENCES_STORAGE_VERSION = 4;
+const BACKGROUND_IMAGE_STORAGE_KEY = 'radiflow-player.background-image';
+const PLAYBACK_PROGRESS_STORAGE_KEY = 'radiflow-player.playback-progress';
 const PLAYBACK_SESSION_STORAGE_KEY = 'apple-music-style-player.playback-session';
 const PLAYBACK_SESSION_STORAGE_VERSION = 1;
 const DEFAULT_CUSTOM_BACKGROUND_BLUR = 72;
 const DEFAULT_TRANSPARENT_BACKGROUND_BLUR = 72;
 const MAX_CUSTOM_BACKGROUND_DIMENSION = 1920;
 const CUSTOM_BACKGROUND_OUTPUT_QUALITY = 0.84;
+
+// EQ definitions stay static so the UI, audio graph, and persisted gain array all
+// describe the same band order.
 const EQ_BANDS = [
   { frequency: 31, label: '31 Hz' },
   { frequency: 62, label: '62 Hz' },
@@ -60,7 +72,15 @@ const sanitizeEQGains = (value: unknown) => EQ_BANDS.map((_, index) => {
   return typeof candidate === 'number' && Number.isFinite(candidate) ? clampEQGain(candidate) : 0;
 });
 const isOverlaySection = (section: AppSection): section is 'settings' | 'eq' => section === 'settings' || section === 'eq';
+const isLocalLibrarySection = (section: LibrarySection): section is Exclude<LibrarySection, 'search' | 'favoriteSongs' | 'favoriteAlbums'> => (
+  section !== 'search' && section !== 'favoriteSongs' && section !== 'favoriteAlbums'
+);
+const isNetEaseLibrarySection = (section: LibrarySection): section is Extract<LibrarySection, 'playlists' | 'search' | 'favoriteSongs' | 'favoriteAlbums'> => (
+  section === 'playlists' || section === 'search' || section === 'favoriteSongs' || section === 'favoriteAlbums'
+);
 
+// Custom background images are recompressed before persistence so they remain fast
+// to load from localStorage and do not bloat the stored preferences payload.
 const compressBackgroundImageFile = (file: File) => new Promise<string>((resolve, reject) => {
   if (!file.type.startsWith('image/')) {
     reject(new Error('Selected file is not an image.'));
@@ -96,8 +116,59 @@ const compressBackgroundImageFile = (file: File) => new Promise<string>((resolve
   image.src = objectUrl;
 });
 
+const sanitizeStoredQueueSnapshot = (value: unknown): Song[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return null;
+    }
+
+    const candidate = entry as Partial<Song>;
+    if (
+      typeof candidate.title !== 'string'
+      || typeof candidate.artist !== 'string'
+      || typeof candidate.lrc !== 'string'
+      || typeof candidate.file !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      title: candidate.title,
+      artist: candidate.artist,
+      album: typeof candidate.album === 'string' ? candidate.album : undefined,
+      cover: typeof candidate.cover === 'string' ? candidate.cover : undefined,
+      duration: typeof candidate.duration === 'number' && Number.isFinite(candidate.duration) ? candidate.duration : undefined,
+      lrc: candidate.lrc,
+      file: candidate.file,
+    } as Song;
+  }).filter((entry): entry is Song => Boolean(entry));
+};
+
+const serializePlaybackSessionSong = (track: Song): Song | null => {
+  if (typeof track.file !== 'string') {
+    return null;
+  }
+
+  return {
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    cover: track.cover,
+    duration: track.duration,
+    lrc: track.lrc,
+    file: track.file,
+  };
+};
+
 export default function App() {
+  // Playback, view, and persistence state are centralized here because most user
+  // actions cut across multiple surfaces at once.
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackStatus, setPlaybackStatus] = useState<PlaybackStatus>('idle');
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [effect, setEffect] = useState<'blur' | 'streamer'>('streamer');
@@ -118,15 +189,20 @@ export default function App() {
   const [isShuffle, setIsShuffle] = useState(false);
   const [showLyrics, setShowLyrics] = useState(true);
   const [showPlaylist, setShowPlaylist] = useState(false);
+  const [showDockQueue, setShowDockQueue] = useState(false);
+  const [queueUndo, setQueueUndo] = useState<{ songs: Song[]; index: number; time: number; playing: boolean; source: string | null } | null>(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [view, setView] = useState<'player' | 'library'>('library');
   const [currentSection, setCurrentSection] = useState<AppSection>('playlists');
   const [lastLibrarySection, setLastLibrarySection] = useState<LibrarySection>('playlists');
+  const [librarySourceMode, setLibrarySourceMode] = useState<'local' | 'netease'>('netease');
+  const [isLibrarySourceTransitioning, setIsLibrarySourceTransitioning] = useState(false);
   const [language, setLanguage] = useState<AppLanguage>('zh-CN');
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [playlistDefinitions, setPlaylistDefinitions] = useState<StoredPlaylist[]>([]);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const [openedPlaylistId, setOpenedPlaylistId] = useState<string | null>(null);
+  const [loadingPlaylistId, setLoadingPlaylistId] = useState<string | null>(null);
   const [playlistModalState, setPlaylistModalState] = useState<PlaylistModalState>(null);
   const [playlistNameDraft, setPlaylistNameDraft] = useState('');
   const [hasLoadedPlaylists, setHasLoadedPlaylists] = useState(false);
@@ -139,12 +215,27 @@ export default function App() {
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [volume, setVolume] = useState(0.8);
   const [eqEnabled, setEQEnabled] = useState(false);
+  const [visualizerMode, setVisualizerMode] = useState<VisualizerMode>('spectrum');
   const [eqGains, setEQGains] = useState<number[]>(DEFAULT_EQ_GAINS);
+  const [searchNavigationRequest, setSearchNavigationRequest] = useState<LibrarySearchNavigationRequest | null>(null);
 
+  // Audio graph refs are intentionally imperative. They survive renders and should
+  // not trigger UI updates on their own.
   const audioRef = useRef<HTMLAudioElement>(null);
+  const playbackRef = useRef<ReturnType<typeof createAudioPlayback> | null>(null);
+  const audioObjectUrlRef = useRef<string | null>(null);
+  const persistedBackgroundRef = useRef<string | null>(null);
+  const preferencesOverrideRef = useRef<StoredPreferences | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const eqFiltersRef = useRef<BiquadFilterNode[]>([]);
+  const lastLibrarySectionBySourceRef = useRef<{ local: LibrarySection; netease: LibrarySection }>({
+    local: 'playlists',
+    netease: 'playlists',
+  });
+  const librarySourceTransitionTimeoutRef = useRef<number | null>(null);
+  const pendingNetEasePlaylistRequestRef = useRef<string | null>(null);
+  const searchNavigationRequestIdRef = useRef(0);
   const hasActiveSong = currentIndex >= 0 && playbackQueue.length > 0 && song.title !== EMPTY_SONG.title;
 
   const {
@@ -156,6 +247,26 @@ export default function App() {
     selectFolder,
     openFolder,
   } = useLibrary(ipc);
+  const {
+    session: neteaseSession,
+    cookieDraft: neteaseCookieDraft,
+    setCookieDraft: setNetEaseCookieDraft,
+    playlists: neteasePlaylists,
+    qrState: neteaseQrState,
+    statusMessage: neteaseStatusMessage,
+    isRestoringSession: isRestoringNetEaseSession,
+    isSavingSession: isSavingNetEaseSession,
+    isLoadingPlaylists: isLoadingNetEasePlaylists,
+    loginWithCookie: loginNetEaseWithCookie,
+    logout: logoutNetEase,
+    refreshPlaylists: refreshNetEasePlaylists,
+    startQrLogin: startNetEaseQrLogin,
+    loadPlaylist: loadNetEasePlaylist,
+    createPlaylist: createNetEasePlaylist,
+    deletePlaylist: deleteNetEasePlaylist,
+    addSongsToPlaylist: addNetEaseSongsToPlaylist,
+    removeSongsFromPlaylist: removeNetEaseSongsFromPlaylist,
+  } = useNetEase();
   const { lyrics, isLoadingLyrics } = useLyrics({
     enabled: hasActiveSong,
     title: song.title,
@@ -167,6 +278,8 @@ export default function App() {
     void refreshLibrary({ forceRefresh: true });
   };
 
+  // Transparent shell mode requires a relaunch. Persist a snapshot first so a
+  // failed restart can restore the previous renderer preferences.
   const persistPreferencesSnapshot = (nextBackgroundSource: 'default' | 'custom' | 'transparent') => {
     if (typeof window === 'undefined') return null;
 
@@ -176,17 +289,19 @@ export default function App() {
       language,
       effect,
       backgroundSource: nextBackgroundSource,
-      customBackgroundImage,
+      customBackgroundImage: undefined,
       customBackgroundBlur,
       transparentBackgroundBlur,
       volume,
       eqEnabled,
+      visualizerMode,
       eqGains,
       loopMode,
       isShuffle,
     };
 
     window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(nextPreferences));
+    preferencesOverrideRef.current = nextPreferences;
     return previousRawPreferences;
   };
 
@@ -215,11 +330,9 @@ export default function App() {
     : transparentBackgroundBlur < 44
       ? 'mica'
       : 'acrylic';
-  const appShellStyle = isCustomBackgroundActive ? ({
-    ['--rf-custom-blur-soft' as '--rf-custom-blur-soft']: `${Math.round(customBackgroundBlur * 0.55)}px`,
-    ['--rf-custom-blur-medium' as '--rf-custom-blur-medium']: `${Math.round(customBackgroundBlur * 0.78)}px`,
-    ['--rf-custom-blur-strong' as '--rf-custom-blur-strong']: `${customBackgroundBlur}px`,
-  } as React.CSSProperties) : undefined;
+  const appShellStyle = ({
+    '--rf-card-blur': `${isTransparentBackgroundActive ? transparentBackgroundBlur : customBackgroundBlur}px`,
+  } as React.CSSProperties);
 
   const settingsCopy = useMemo(() => getSettingsCopy(language), [language]);
   const eqCopy = useMemo(() => getEQCopy(language), [language]);
@@ -227,6 +340,58 @@ export default function App() {
     ...band,
     gain: eqGains[index] ?? 0,
   })), [eqGains]);
+  const neteaseQrStatusText = useMemo(() => {
+    if (!neteaseQrState) {
+      return null;
+    }
+
+    switch (neteaseQrState.statusCode) {
+      case 800:
+        return language === 'zh-CN' ? '二维码已过期，请重新生成。' : 'The QR code expired. Generate a new one.';
+      case 801:
+        return language === 'zh-CN' ? '请使用网易云音乐 App 扫码登录。' : 'Scan the QR code with the NetEase Cloud Music app.';
+      case 802:
+        return language === 'zh-CN' ? '已扫码，请在手机上确认登录。' : 'Scanned. Confirm the login on your phone.';
+      case 803:
+        return language === 'zh-CN' ? '网易云登录成功。' : 'NetEase login succeeded.';
+      default:
+        return neteaseQrState.statusMessage || settingsCopy.neteaseQrHint;
+    }
+  }, [language, neteaseQrState, settingsCopy.neteaseQrHint]);
+  const neteaseStatusText = useMemo(() => {
+    if (isRestoringNetEaseSession) {
+      return language === 'zh-CN' ? '正在恢复网易云会话' : 'Restoring NetEase session';
+    }
+
+    if (neteaseSession.isLoggedIn && neteaseSession.account) {
+      return language === 'zh-CN'
+        ? `已登录：${neteaseSession.account.nickname}`
+        : `Signed in as ${neteaseSession.account.nickname}`;
+    }
+
+    if (neteaseSession.isConfigured) {
+      return language === 'zh-CN' ? '等待登录网易云' : 'Waiting for NetEase login';
+    }
+
+    return language === 'zh-CN' ? '尚未连接网易云' : 'NetEase is not connected';
+  }, [isRestoringNetEaseSession, language, neteaseSession.account, neteaseSession.isConfigured, neteaseSession.isLoggedIn]);
+  const neteaseStatusDetail = useMemo(() => {
+    if (neteaseStatusMessage) {
+      return neteaseStatusMessage;
+    }
+
+    if (isLoadingNetEasePlaylists) {
+      return language === 'zh-CN' ? '正在同步云歌单…' : 'Syncing cloud playlists...';
+    }
+
+    if (neteaseSession.isLoggedIn) {
+      return language === 'zh-CN'
+        ? `已同步 ${neteasePlaylists.length} 个云歌单`
+        : `Synced ${neteasePlaylists.length} cloud playlist${neteasePlaylists.length === 1 ? '' : 's'}`;
+    }
+
+    return neteaseQrStatusText || settingsCopy.neteaseDescription;
+  }, [isLoadingNetEasePlaylists, language, neteasePlaylists.length, neteaseQrStatusText, neteaseSession.isLoggedIn, neteaseStatusMessage, settingsCopy.neteaseDescription]);
   const uiText = useMemo(() => {
     if (language === 'zh-CN') {
       return {
@@ -238,10 +403,13 @@ export default function App() {
         artists: '歌手',
         albums: '专辑',
         search: '搜索',
+        favoriteSongs: '收藏歌曲',
+        favoriteAlbums: '收藏专辑',
         settings: '设置',
         eq: '均衡器',
         createPlaylist: '新建播放列表',
         playlistPrefix: '播放列表',
+        neteasePlaylistPrefix: '云歌单',
         songsCount: (count: number) => `${count} 首歌曲`,
         activeTarget: '当前目标',
         viewingPlaylist: '当前查看',
@@ -271,6 +439,11 @@ export default function App() {
         addSuccess: (playlistName: string, count: number) => `已添加到 ${playlistName} · ${count} 首歌曲`,
         addNoop: '这些歌曲已存在于目标播放列表',
         playlistDeletedFallback: '已删除的播放列表',
+        localScope: '本地',
+        neteaseScope: '网易云',
+        neteasePlaylistLoginRequired: '登录网易云后才能管理在线歌单。',
+        neteasePlaylistCreateFailed: '创建网易云歌单失败。',
+        mixedPlaylistUnsupported: '本地歌曲和在线歌曲暂时不能混合添加到同一个歌单。',
         openSettings: '打开设置',
         openEQ: '打开均衡器',
         settingsTransparentUnsupported: '当前系统不支持系统级毛玻璃透明背景',
@@ -292,10 +465,13 @@ export default function App() {
       artists: 'Artists',
       albums: 'Albums',
       search: 'Search',
+      favoriteSongs: 'Favorite Songs',
+      favoriteAlbums: 'Favorite Albums',
       settings: 'Settings',
       eq: 'Equalizer',
       createPlaylist: 'New Playlist',
       playlistPrefix: 'Playlist',
+      neteasePlaylistPrefix: 'Cloud Playlist',
       songsCount: (count: number) => `${count} track${count === 1 ? '' : 's'}`,
       activeTarget: 'Target',
       viewingPlaylist: 'Viewing',
@@ -325,6 +501,11 @@ export default function App() {
       addSuccess: (playlistName: string, count: number) => `Added ${count} track${count === 1 ? '' : 's'} to ${playlistName}`,
       addNoop: 'Those tracks are already in the target playlist',
       playlistDeletedFallback: 'Deleted playlist',
+      localScope: 'Local',
+      neteaseScope: 'NetEase',
+      neteasePlaylistLoginRequired: 'Sign in to NetEase before managing online playlists.',
+      neteasePlaylistCreateFailed: 'Failed to create NetEase playlist.',
+      mixedPlaylistUnsupported: 'Local tracks and online tracks cannot be added together yet.',
       openSettings: 'Open Settings',
       openEQ: 'Open Equalizer',
       settingsTransparentUnsupported: 'System glass transparency is not supported on this machine',
@@ -357,6 +538,7 @@ export default function App() {
     try {
       await ipc.invoke('window:restart-with-shell-mode', nextTransparentWindowMode);
     } catch {
+      preferencesOverrideRef.current = null;
       if (typeof window !== 'undefined') {
         if (previousRawPreferences === null) {
           window.localStorage.removeItem(PREFERENCES_STORAGE_KEY);
@@ -399,9 +581,36 @@ export default function App() {
     setEQGains([...DEFAULT_EQ_GAINS]);
   };
 
+  // Playlists are rehydrated against the current library snapshot so missing songs
+  // naturally disappear from derived playlist collections after rescans.
   const savedPlaylists = useMemo(
     () => rebuildPlaylistCollections(playlistDefinitions, librarySongs),
     [playlistDefinitions, librarySongs]
+  );
+  const allPlaylists = useMemo(
+    () => [...savedPlaylists, ...neteasePlaylists],
+    [neteasePlaylists, savedPlaylists]
+  );
+  const editableNetEasePlaylists = useMemo(
+    () => neteasePlaylists.filter((playlist) => playlist.playlistCategory === 'created'),
+    [neteasePlaylists]
+  );
+  const localSidebarItems = useMemo<Array<{ id: LibrarySection; label: string; icon: React.ReactNode }>>(() => [
+    { id: 'playlists', label: uiText.playlists, icon: <ListMusic size={18} /> },
+    { id: 'all', label: uiText.allSongs, icon: <Music size={18} /> },
+    { id: 'artists', label: uiText.artists, icon: <User size={18} /> },
+    { id: 'albums', label: uiText.albums, icon: <Disc size={18} /> },
+  ], [uiText.allSongs, uiText.albums, uiText.artists, uiText.playlists]);
+  const neteaseSidebarItems = useMemo<Array<{ id: LibrarySection; label: string; icon: React.ReactNode }>>(() => [
+    { id: 'playlists', label: uiText.playlists, icon: <ListMusic size={18} /> },
+    { id: 'favoriteSongs', label: uiText.favoriteSongs, icon: <Heart size={18} /> },
+    { id: 'favoriteAlbums', label: uiText.favoriteAlbums, icon: <Disc size={18} /> },
+    { id: 'search', label: uiText.search, icon: <Search size={18} /> },
+  ], [uiText.favoriteAlbums, uiText.favoriteSongs, uiText.playlists, uiText.search]);
+  const sidebarItems = librarySourceMode === 'netease' ? neteaseSidebarItems : localSidebarItems;
+  const visibleLibraryPlaylists = useMemo(
+    () => librarySourceMode === 'netease' ? neteasePlaylists : savedPlaylists,
+    [librarySourceMode, neteasePlaylists, savedPlaylists]
   );
 
   const selectedPlaylist = useMemo(
@@ -410,16 +619,38 @@ export default function App() {
   );
 
   const displayedPlaylist = useMemo(
-    () => savedPlaylists.find((playlist) => playlist.id === openedPlaylistId) ?? null,
-    [savedPlaylists, openedPlaylistId]
+    () => visibleLibraryPlaylists.find((playlist) => playlist.id === openedPlaylistId) ?? null,
+    [openedPlaylistId, visibleLibraryPlaylists]
   );
 
-  const openCreatePlaylistModalWithSongKeys = (pendingSongKeys: string[], openPlaylistsAfterCreate: boolean) => {
-    setPlaylistNameDraft(`${uiText.playlistPrefix} ${playlistDefinitions.length + 1}`);
+  const getDefaultPlaylistName = (scope: PlaylistModalScope) => (
+    scope === 'netease'
+      ? `${uiText.neteasePlaylistPrefix} ${editableNetEasePlaylists.length + 1}`
+      : `${uiText.playlistPrefix} ${playlistDefinitions.length + 1}`
+  );
+
+  const openCreatePlaylistModalForScope = (
+    scope: PlaylistModalScope,
+    {
+      pendingSongKeys = [],
+      pendingSongIds = [],
+      openPlaylistsAfterCreate,
+      allowScopeSelection,
+    }: {
+      pendingSongKeys?: string[];
+      pendingSongIds?: string[];
+      openPlaylistsAfterCreate: boolean;
+      allowScopeSelection: boolean;
+    }
+  ) => {
+    setPlaylistNameDraft(getDefaultPlaylistName(scope));
     setPlaylistModalState({
       type: 'create-playlist',
+      scope,
       pendingSongKeys,
+      pendingSongIds,
       openPlaylistsAfterCreate,
+      allowScopeSelection,
     });
   };
 
@@ -428,17 +659,40 @@ export default function App() {
     if (!playlist) return;
 
     setPlaylistNameDraft(playlist.name);
-    setPlaylistModalState({ type: 'rename-playlist', playlistId });
+    setPlaylistModalState({ type: 'rename-playlist', playlistId, scope: 'local' });
   };
 
-  const openDeletePlaylistModal = (playlistId: string) => {
-    const playlist = playlistDefinitions.find((entry) => entry.id === playlistId);
+  const openDeletePlaylistModal = (playlistId: string, scope: PlaylistModalScope = 'local') => {
+    const playlist = scope === 'netease'
+      ? neteasePlaylists.find((entry) => entry.id === playlistId)
+      : playlistDefinitions.find((entry) => entry.id === playlistId);
     if (!playlist) return;
 
     setPlaylistModalState({
       type: 'delete-playlist',
       playlistId,
       playlistName: playlist.name,
+      scope,
+    });
+  };
+
+  const updateCreatePlaylistModalScope = (scope: PlaylistModalScope) => {
+    setPlaylistModalState((current) => {
+      if (!current || current.type !== 'create-playlist' || !current.allowScopeSelection || current.scope === scope) {
+        return current;
+      }
+
+      const currentDefaultName = getDefaultPlaylistName(current.scope);
+      const nextDefaultName = getDefaultPlaylistName(scope);
+      setPlaylistNameDraft((draft) => {
+        const normalizedDraft = draft.trim();
+        return !normalizedDraft || normalizedDraft === currentDefaultName ? nextDefaultName : draft;
+      });
+
+      return {
+        ...current,
+        scope,
+      };
     });
   };
 
@@ -451,6 +705,8 @@ export default function App() {
     setToastMessage(message);
   };
 
+  // Lazily create the Web Audio graph on first interaction. This keeps startup cheap
+  // and avoids autoplay restrictions until the user explicitly plays something.
   const initAudioContext = () => {
     if (!audioContextRef.current && audioRef.current) {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -488,6 +744,15 @@ export default function App() {
   };
 
   useEffect(() => {
+    return () => {
+      if (librarySourceTransitionTimeoutRef.current !== null) {
+        window.clearTimeout(librarySourceTransitionTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // EQ changes only retune existing filters; the graph topology is created once.
+  useEffect(() => {
     const context = audioContextRef.current;
     const filters = eqFiltersRef.current;
     if (!context || filters.length === 0) {
@@ -500,9 +765,26 @@ export default function App() {
     });
   }, [eqEnabled, eqGains]);
 
+  // Session restore waits for the library to finish loading so persisted queue keys
+  // can be resolved back into current Song objects before playback resumes.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const controller = createAudioPlayback(audio, (status) => {
+      setPlaybackStatus(status);
+      setIsPlaying(status === 'playing');
+    });
+    playbackRef.current = controller;
+    return () => {
+      controller.dispose();
+      playbackRef.current = null;
+      if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!hasLoadedPlaybackSession || hasRestoredPlaybackSession || !hasLoadedLibrary) return;
+    if (!hasLoadedPlaybackSession || hasRestoredPlaybackSession || !hasLoadedLibrary || isRestoringNetEaseSession) return;
 
     if (!pendingPlaybackSession) {
       setHasRestoredPlaybackSession(true);
@@ -511,8 +793,9 @@ export default function App() {
 
     const sessionToRestore = pendingPlaybackSession;
     const songMap = new Map(librarySongs.map((track) => [createSongIdentity(track), track]));
+    const snapshotSongMap = new Map((sessionToRestore.queueSnapshot ?? []).map((track) => [createSongIdentity(track), track]));
     const restoredQueue = sessionToRestore.queueSongKeys
-      .map((songKey) => songMap.get(songKey))
+      .map((songKey) => songMap.get(songKey) ?? snapshotSongMap.get(songKey))
       .filter((track): track is Song => Boolean(track));
     const restoredIndex = restoredQueue.findIndex((track) => createSongIdentity(track) === sessionToRestore.currentSongKey);
 
@@ -533,10 +816,12 @@ export default function App() {
     setSong(restoredSong);
     setCurrentTime(restoredTime);
     setDuration(0);
-    setView(sessionToRestore.view);
+    // Startup always opens the home library; restoring a track never autoplays.
+    setView('library');
+    setCurrentSection('playlists');
+    setIsPlaying(false);
     setShowLyrics(sessionToRestore.showLyrics);
     setShowPlaylist(sessionToRestore.showPlaylist);
-    setIsPlaying(sessionToRestore.isPlaying);
     setHasRestoredPlaybackSession(true);
     setPendingPlaybackSession(null);
 
@@ -545,72 +830,38 @@ export default function App() {
       return;
     }
 
-    let isCancelled = false;
     const restoredUrl = typeof restoredSong.file === 'string' ? restoredSong.file : URL.createObjectURL(restoredSong.file);
+    if (typeof restoredSong.file !== 'string') audioObjectUrlRef.current = restoredUrl;
+    playbackRef.current?.load(restoredUrl, false, restoredTime);
+  }, [hasLoadedLibrary, hasLoadedPlaybackSession, hasRestoredPlaybackSession, isRestoringNetEaseSession, librarySongs, pendingPlaybackSession]);
 
-    const syncRestoredPlayback = () => {
-      if (isCancelled) return;
-
-      audio.currentTime = restoredTime;
-      setCurrentTime(restoredTime);
-
-      if (sessionToRestore.isPlaying) {
-        initAudioContext();
-        audio.play()
-          .then(() => {
-            if (!isCancelled) {
-              setIsPlaying(true);
-            }
-          })
-          .catch((error) => {
-            console.error('Failed to resume playback session:', error);
-            if (!isCancelled) {
-              setIsPlaying(false);
-            }
-          });
-      } else {
-        setIsPlaying(false);
-      }
-
-      audio.removeEventListener('loadedmetadata', syncRestoredPlayback);
-    };
-
-    audio.addEventListener('loadedmetadata', syncRestoredPlayback);
-    audio.src = restoredUrl;
-    audio.load();
-
-    return () => {
-      isCancelled = true;
-      audio.removeEventListener('loadedmetadata', syncRestoredPlayback);
-    };
-  }, [hasLoadedLibrary, hasLoadedPlaybackSession, hasRestoredPlaybackSession, librarySongs, pendingPlaybackSession]);
-
+  // Audio element events remain the source of truth for time and duration, then
+  // React state mirrors them into the visible control surfaces.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    const updateTime = () => setCurrentTime(audio.currentTime);
-    const updateDuration = () => setDuration(audio.duration);
+    const updateDuration = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
     const handleEnded = () => {
       if (loopMode === 'one') {
         audio.currentTime = 0;
-        audio.play();
+        void playbackRef.current?.play();
       } else {
         handleNext();
       }
     };
 
-    audio.addEventListener('timeupdate', updateTime);
     audio.addEventListener('loadedmetadata', updateDuration);
     audio.addEventListener('ended', handleEnded);
 
     return () => {
-      audio.removeEventListener('timeupdate', updateTime);
       audio.removeEventListener('loadedmetadata', updateDuration);
       audio.removeEventListener('ended', handleEnded);
     };
   }, [loopMode, playbackQueue, currentIndex, isShuffle]);
 
+  // Window maximize state is owned by the native shell, so the renderer asks for the
+  // current value once and then subscribes to future shell-originated changes.
   useEffect(() => {
     if (!ipc) return;
 
@@ -630,6 +881,8 @@ export default function App() {
     };
   }, []);
 
+  // Restore playlist definitions from localStorage once and normalize any malformed
+  // entries before they enter live state.
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -657,6 +910,8 @@ export default function App() {
     }
   }, []);
 
+  // Preferences accept older schema versions so upgrades preserve user state whenever
+  // the stored payload is still understandable.
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -679,9 +934,8 @@ export default function App() {
         setBackgroundSource(parsed.backgroundSource);
       }
 
-      if (typeof parsed.customBackgroundImage === 'string') {
-        setCustomBackgroundImage(parsed.customBackgroundImage);
-      }
+      const savedBackground = window.localStorage.getItem(BACKGROUND_IMAGE_STORAGE_KEY);
+      setCustomBackgroundImage(savedBackground ?? (typeof parsed.customBackgroundImage === 'string' ? parsed.customBackgroundImage : null));
 
       if (typeof parsed.customBackgroundBlur === 'number' && Number.isFinite(parsed.customBackgroundBlur)) {
         setCustomBackgroundBlur(Math.min(120, Math.max(0, parsed.customBackgroundBlur)));
@@ -695,6 +949,7 @@ export default function App() {
         setVolume(Math.min(1, Math.max(0, parsed.volume)));
       }
 
+      setVisualizerMode(normalizeVisualizerMode(parsed.visualizerMode));
       if (typeof parsed.eqEnabled === 'boolean') {
         setEQEnabled(parsed.eqEnabled);
       }
@@ -717,6 +972,8 @@ export default function App() {
     }
   }, []);
 
+  // Queue/session persistence is intentionally separate from preferences so transport
+  // state can evolve independently of the wider UI configuration.
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -741,6 +998,7 @@ export default function App() {
           nextSession = {
             version: PLAYBACK_SESSION_STORAGE_VERSION,
             queueSongKeys: parsed.queueSongKeys.filter((songKey): songKey is string => typeof songKey === 'string'),
+            queueSnapshot: sanitizeStoredQueueSnapshot(parsed.queueSnapshot),
             currentSongKey: parsed.currentSongKey,
             currentTime: Math.max(0, parsed.currentTime),
             isPlaying: parsed.isPlaying,
@@ -753,6 +1011,17 @@ export default function App() {
           window.localStorage.removeItem(PLAYBACK_SESSION_STORAGE_KEY);
         }
       }
+      const rawProgress = window.localStorage.getItem(PLAYBACK_PROGRESS_STORAGE_KEY);
+      if (nextSession && rawProgress) {
+        try {
+          const progress = JSON.parse(rawProgress);
+          if (progress.currentSongKey === nextSession.currentSongKey
+            && Number.isFinite(progress.currentTime) && typeof progress.isPlaying === 'boolean') {
+            nextSession.currentTime = Math.max(0, progress.currentTime);
+            nextSession.isPlaying = progress.isPlaying;
+          }
+        } catch { /* Keep the full session if the small progress record is corrupt. */ }
+      }
     } catch (error) {
       console.error('Failed to restore playback session:', error);
       window.localStorage.removeItem(PLAYBACK_SESSION_STORAGE_KEY);
@@ -763,12 +1032,26 @@ export default function App() {
     }
   }, []);
 
+  // Only mirror playlists back into storage after the initial hydration pass, or an
+  // empty default state would overwrite valid saved data.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!hasLoadedPlaylists) return;
 
     window.localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(playlistDefinitions));
   }, [hasLoadedPlaylists, playlistDefinitions]);
+
+  // Migrate legacy inline images once. Sliders never serialize the image again.
+  useEffect(() => {
+    if (!hasLoadedPreferences) return;
+    try {
+      if (customBackgroundImage) window.localStorage.setItem(BACKGROUND_IMAGE_STORAGE_KEY, customBackgroundImage);
+      else window.localStorage.removeItem(BACKGROUND_IMAGE_STORAGE_KEY);
+      persistedBackgroundRef.current = customBackgroundImage;
+    } catch (error) {
+      console.error('Failed to persist background image:', error);
+    }
+  }, [hasLoadedPreferences, customBackgroundImage]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -779,19 +1062,36 @@ export default function App() {
       language,
       effect,
       backgroundSource,
-      customBackgroundImage,
+      customBackgroundImage: undefined,
       customBackgroundBlur,
       transparentBackgroundBlur,
       volume,
       eqEnabled,
+      visualizerMode,
       eqGains,
       loopMode,
       isShuffle,
     };
 
-    window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
-  }, [hasLoadedPreferences, language, effect, backgroundSource, customBackgroundImage, customBackgroundBlur, transparentBackgroundBlur, volume, eqEnabled, eqGains, loopMode, isShuffle]);
+    const save = () => {
+      try {
+        // Retain the legacy image in preferences if its migration did not fit in storage.
+        const next = preferencesOverrideRef.current || preferences;
+        window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(persistedBackgroundRef.current === customBackgroundImage ? next : { ...next, customBackgroundImage }));
+      } catch (error) { console.error('Failed to persist preferences:', error); }
+    };
+    const timer = window.setTimeout(save, 250);
+    window.addEventListener('pagehide', save);
+    window.addEventListener('beforeunload', save);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('pagehide', save);
+      window.removeEventListener('beforeunload', save);
+    };
+  }, [hasLoadedPreferences, language, effect, backgroundSource, customBackgroundImage, customBackgroundBlur, transparentBackgroundBlur, volume, eqEnabled, visualizerMode, eqGains, loopMode, isShuffle]);
 
+  // Reconcile renderer preference state with the native shell. If the stored shell
+  // mode differs from the desired background source, the app relaunches to match.
   useEffect(() => {
     if (!ipc || !hasLoadedPreferences) return;
 
@@ -825,20 +1125,26 @@ export default function App() {
   useEffect(() => {
     if (!ipc) return;
 
+    // Background material only matters while the transparent shell is active.
     const backgroundMaterial = backgroundSource === 'transparent' && isTransparentWindowModeEnabled
       ? transparentBackgroundMaterial
       : 'none';
     ipc.invoke('window:set-background-material', backgroundMaterial).catch(() => undefined);
   }, [backgroundSource, isTransparentWindowModeEnabled, transparentBackgroundMaterial]);
 
+  const storedQueue = useMemo(() => ({
+    queueSongKeys: playbackQueue.map(getPersistedSongKey).filter((key): key is string => Boolean(key)),
+    queueSnapshot: playbackQueue.map(serializePlaybackSessionSong).filter((track): track is Song => Boolean(track)),
+  }), [playbackQueue]);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!hasLoadedPlaybackSession || !hasRestoredPlaybackSession) return;
 
+    // Persist only stable song keys so the session can be restored after a reload
+    // without depending entirely on the current in-memory library snapshot.
     const currentSongKey = hasActiveSong ? getPersistedSongKey(song) : null;
-    const queueSongKeys = playbackQueue
-      .map(getPersistedSongKey)
-      .filter((songKey): songKey is string => Boolean(songKey));
+    const { queueSongKeys, queueSnapshot } = storedQueue;
 
     const writePlaybackSession = (session: StoredPlaybackSession | null) => {
       try {
@@ -856,8 +1162,9 @@ export default function App() {
       ? {
           version: PLAYBACK_SESSION_STORAGE_VERSION,
           queueSongKeys,
+          queueSnapshot,
           currentSongKey,
-          currentTime: Math.max(0, Math.floor(currentTime)),
+          currentTime: playbackRef.current?.getPosition() ?? 0,
           isPlaying,
           currentPlaybackPlaylistId,
           view,
@@ -868,43 +1175,57 @@ export default function App() {
 
     writePlaybackSession(playbackSession);
 
-    const flushPlaybackSession = () => {
-      if (!playbackSession) {
-        writePlaybackSession(null);
-        return;
-      }
-
-      const liveCurrentTime = audioRef.current && Number.isFinite(audioRef.current.currentTime)
-        ? audioRef.current.currentTime
-        : playbackSession.currentTime;
-
-      writePlaybackSession({
-        ...playbackSession,
-        currentTime: Math.max(0, liveCurrentTime),
-        isPlaying: audioRef.current ? !audioRef.current.paused && !audioRef.current.ended : playbackSession.isPlaying,
-      });
-    };
-
-    window.addEventListener('beforeunload', flushPlaybackSession);
-    window.addEventListener('pagehide', flushPlaybackSession);
-
-    return () => {
-      window.removeEventListener('beforeunload', flushPlaybackSession);
-      window.removeEventListener('pagehide', flushPlaybackSession);
-    };
   }, [
     currentPlaybackPlaylistId,
-    currentTime,
     hasActiveSong,
     hasLoadedPlaybackSession,
     hasRestoredPlaybackSession,
     isPlaying,
-    playbackQueue,
+    storedQueue,
     showLyrics,
     showPlaylist,
     song,
     view,
   ]);
+
+  // Progress is a tiny separate record. Queue serialization is never on the clock path.
+  useEffect(() => {
+    if (!hasRestoredPlaybackSession || !hasLoadedPlaybackSession) return;
+    const currentSongKey = hasActiveSong ? getPersistedSongKey(song) : null;
+    let lastValue = '';
+    const saveProgress = () => {
+      try {
+        if (!currentSongKey) {
+          window.localStorage.removeItem(PLAYBACK_PROGRESS_STORAGE_KEY);
+          return;
+        }
+        const audio = audioRef.current;
+        const value = JSON.stringify({
+          currentSongKey,
+          currentTime: playbackRef.current?.getPosition() ?? 0,
+          isPlaying: Boolean(audio && !audio.paused && !audio.ended && !audio.error),
+        });
+        if (value !== lastValue) {
+          window.localStorage.setItem(PLAYBACK_PROGRESS_STORAGE_KEY, value);
+          lastValue = value;
+        }
+      } catch (error) { console.error('Failed to persist playback progress:', error); }
+    };
+    saveProgress();
+    const timer = window.setInterval(saveProgress, 5000);
+    window.addEventListener('pagehide', saveProgress);
+    window.addEventListener('beforeunload', saveProgress);
+    audioRef.current?.addEventListener('pause', saveProgress);
+    audioRef.current?.addEventListener('seeked', saveProgress);
+    const audio = audioRef.current;
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('pagehide', saveProgress);
+      window.removeEventListener('beforeunload', saveProgress);
+      audio?.removeEventListener('pause', saveProgress);
+      audio?.removeEventListener('seeked', saveProgress);
+    };
+  }, [hasRestoredPlaybackSession, hasLoadedPlaybackSession, hasActiveSong, song, isPlaying]);
 
   useEffect(() => {
     if (!selectedPlaylistId && savedPlaylists.length > 0) {
@@ -920,10 +1241,10 @@ export default function App() {
   useEffect(() => {
     if (!openedPlaylistId) return;
 
-    if (!savedPlaylists.some((playlist) => playlist.id === openedPlaylistId)) {
+    if (!allPlaylists.some((playlist) => playlist.id === openedPlaylistId)) {
       setOpenedPlaylistId(null);
     }
-  }, [savedPlaylists, openedPlaylistId]);
+  }, [allPlaylists, openedPlaylistId]);
 
   useEffect(() => {
     if (!toastMessage) return;
@@ -938,6 +1259,8 @@ export default function App() {
   useEffect(() => {
     if (!ipc) return;
 
+    // Main-process media keys and taskbar controls reuse the same playback handlers
+    // as the on-screen controls.
     const handleControl = (_event: any, command: string) => {
       switch (command) {
         case 'toggle-play':
@@ -962,11 +1285,24 @@ export default function App() {
     }
   }, [volume]);
 
+  // Keep Windows taskbar buttons/progress synchronized without leaking shell
+  // concerns into child components.
   useEffect(() => {
     if (!ipc) return;
-    ipc.send('media:update-playback-state', { isPlaying, hasActiveSong, currentTime, duration });
-  }, [isPlaying, hasActiveSong, currentTime, duration]);
+    const audio = audioRef.current;
+    let lastSecond = -1;
+    const sync = () => {
+      const time = Math.floor(audio?.currentTime || 0);
+      if (time === lastSecond) return;
+      lastSecond = time;
+      ipc.send('media:update-playback-state', { isPlaying, hasActiveSong, currentTime: time, duration });
+    };
+    sync();
+    audio?.addEventListener('timeupdate', sync);
+    return () => audio?.removeEventListener('timeupdate', sync);
+  }, [isPlaying, hasActiveSong, duration]);
 
+  // Central queue loader used by direct play, next/prev navigation, and playlist playback.
   const playSongs = async (songsToPlay: Song[], index: number, sourcePlaylistId: string | null = null) => {
     if (index < 0 || index >= songsToPlay.length) return;
 
@@ -982,32 +1318,28 @@ export default function App() {
 
     if (audioRef.current && selectedSong.file) {
       const url = typeof selectedSong.file === 'string' ? selectedSong.file : URL.createObjectURL(selectedSong.file);
-      audioRef.current.src = url;
-      audioRef.current.load();
+      if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+      audioObjectUrlRef.current = typeof selectedSong.file === 'string' ? null : url;
       initAudioContext();
-      audioRef.current.play().catch((error) => console.error('Playback error:', error));
-      setIsPlaying(true);
+      playbackRef.current?.load(url);
+    } else {
+      playbackRef.current?.clear();
     }
   };
 
   const togglePlay = () => {
     if (audioRef.current && audioRef.current.src && song.title !== EMPTY_SONG.title) {
       initAudioContext();
-      if (isPlaying) {
-        audioRef.current.pause();
-      } else {
-        audioRef.current.play().catch((error) => console.error('Playback error:', error));
-      }
-      setIsPlaying(!isPlaying);
+      playbackRef.current?.toggle();
     }
   };
 
-  const handleSeek = (time: number) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = time;
-      setCurrentTime(time);
-    }
-  };
+  const handleSeek = useCallback((time: number) => {
+    const audio = audioRef.current;
+    if (!audio || !Number.isFinite(time)) return;
+    audio.currentTime = Math.max(0, Number.isFinite(audio.duration) ? Math.min(time, audio.duration) : time);
+    // Local clock subscribers handle seeking; do not rerender the entire app.
+  }, []);
 
   const playSong = async (index: number) => {
     if (index < 0 || index >= playbackQueue.length) return;
@@ -1015,6 +1347,28 @@ export default function App() {
   };
 
   const openCreatePlaylistModal = (pendingSongs: Song[] = [], openPlaylistsAfterCreate = true) => {
+    const pendingSongIds = Array.from(
+      new Set(
+        pendingSongs
+          .map(getNetEaseSongIdFromSong)
+          .filter((songId): songId is string => Boolean(songId))
+      )
+    );
+
+    if (pendingSongs.length > 0 && pendingSongIds.length === pendingSongs.length) {
+      if (!neteaseSession.isLoggedIn) {
+        showToast(uiText.neteasePlaylistLoginRequired);
+        return;
+      }
+
+      openCreatePlaylistModalForScope('netease', {
+        pendingSongIds,
+        openPlaylistsAfterCreate,
+        allowScopeSelection: false,
+      });
+      return;
+    }
+
     const pendingSongKeys = Array.from(
       new Set(
         pendingSongs
@@ -1023,7 +1377,11 @@ export default function App() {
       )
     );
 
-    openCreatePlaylistModalWithSongKeys(pendingSongKeys, openPlaylistsAfterCreate);
+    openCreatePlaylistModalForScope('local', {
+      pendingSongKeys,
+      openPlaylistsAfterCreate,
+      allowScopeSelection: pendingSongs.length === 0 && neteaseSession.isLoggedIn,
+    });
   };
 
   const appendSongKeysToPlaylist = (playlistId: string, songKeys: string[]) => {
@@ -1063,6 +1421,39 @@ export default function App() {
   };
 
   const requestAddSongsToPlaylist = (songsToAdd: Song[]) => {
+    const pendingSongIds = Array.from(
+      new Set(
+        songsToAdd
+          .map(getNetEaseSongIdFromSong)
+          .filter((songId): songId is string => Boolean(songId))
+      )
+    );
+
+    if (pendingSongIds.length > 0) {
+      if (pendingSongIds.length !== songsToAdd.length) {
+        showToast(uiText.mixedPlaylistUnsupported);
+        return;
+      }
+
+      if (!neteaseSession.isLoggedIn) {
+        showToast(uiText.neteasePlaylistLoginRequired);
+        return;
+      }
+
+      if (editableNetEasePlaylists.length === 0) {
+        openCreatePlaylistModal(songsToAdd, false);
+        return;
+      }
+
+      setPlaylistModalState({
+        type: 'pick-playlist',
+        scope: 'netease',
+        pendingSongKeys: [],
+        pendingSongIds,
+      });
+      return;
+    }
+
     const pendingSongKeys = Array.from(
       new Set(
         songsToAdd
@@ -1080,7 +1471,9 @@ export default function App() {
 
     setPlaylistModalState({
       type: 'pick-playlist',
+      scope: 'local',
       pendingSongKeys,
+      pendingSongIds: [],
     });
   };
 
@@ -1088,11 +1481,42 @@ export default function App() {
     requestAddSongsToPlaylist([songToAdd]);
   };
 
-  const handleConfirmCreatePlaylist = () => {
+  const handleConfirmCreatePlaylist = async () => {
     if (playlistModalState?.type !== 'create-playlist') return;
 
     const nextName = playlistNameDraft.trim();
     if (!nextName) return;
+
+    if (playlistModalState.scope === 'netease') {
+      try {
+        const createdPlaylist = await createNetEasePlaylist(nextName);
+        if (!createdPlaylist) {
+          throw new Error(uiText.neteasePlaylistCreateFailed);
+        }
+
+        if (playlistModalState.pendingSongIds.length > 0) {
+          const previousTrackCount = createdPlaylist.trackCount ?? createdPlaylist.songs.length;
+          const updatedPlaylist = await addNetEaseSongsToPlaylist(createdPlaylist.id, playlistModalState.pendingSongIds);
+          const nextTrackCount = updatedPlaylist?.songs.length
+            || updatedPlaylist?.trackCount
+            || previousTrackCount + playlistModalState.pendingSongIds.length;
+          const addedCount = Math.max(0, nextTrackCount - previousTrackCount);
+          const playlistName = updatedPlaylist?.name || createdPlaylist.name;
+
+          showToast(addedCount > 0 ? uiText.addSuccess(playlistName, addedCount) : uiText.addNoop);
+        }
+
+        if (playlistModalState.openPlaylistsAfterCreate) {
+          showPlaylistOverview();
+        }
+
+        closePlaylistModal();
+      } catch (error) {
+        console.error('Failed to create NetEase playlist:', error);
+        showToast(error instanceof Error ? error.message : uiText.neteasePlaylistCreateFailed);
+      }
+      return;
+    }
 
     const playlistId = `playlist-${Date.now()}`;
     setPlaylistDefinitions((previous) => [
@@ -1133,11 +1557,32 @@ export default function App() {
     closePlaylistModal();
   };
 
-  const handleConfirmDeletePlaylist = () => {
+  const handleConfirmDeletePlaylist = async () => {
     if (playlistModalState?.type !== 'delete-playlist') return;
 
     const deletedPlaylistId = playlistModalState.playlistId;
     const deletedPlaylistName = playlistModalState.playlistName;
+
+    if (playlistModalState.scope === 'netease') {
+      try {
+        await deleteNetEasePlaylist(deletedPlaylistId);
+
+        if (openedPlaylistId === deletedPlaylistId) {
+          setOpenedPlaylistId(null);
+        }
+
+        if (currentPlaybackPlaylistId === deletedPlaylistId) {
+          setCurrentPlaybackPlaylistId(null);
+        }
+
+        showToast(`${uiText.deleteSuccess}: ${deletedPlaylistName || uiText.playlistDeletedFallback}`);
+        closePlaylistModal();
+      } catch (error) {
+        console.error('Failed to delete NetEase playlist:', error);
+        showToast(error instanceof Error ? error.message : uiText.deleteSuccess);
+      }
+      return;
+    }
 
     setPlaylistDefinitions((previous) => previous.filter((playlist) => playlist.id !== deletedPlaylistId));
 
@@ -1157,8 +1602,31 @@ export default function App() {
     closePlaylistModal();
   };
 
-  const handleChoosePlaylistForSongs = (playlistId: string) => {
+  const handleChoosePlaylistForSongs = async (playlistId: string) => {
     if (playlistModalState?.type !== 'pick-playlist') return;
+
+    if (playlistModalState.scope === 'netease') {
+      try {
+        const targetPlaylist = editableNetEasePlaylists.find((playlist) => playlist.id === playlistId) ?? null;
+        const previousTrackCount = targetPlaylist?.trackCount ?? targetPlaylist?.songs.length ?? 0;
+        const updatedPlaylist = await addNetEaseSongsToPlaylist(playlistId, playlistModalState.pendingSongIds);
+        const nextTrackCount = updatedPlaylist?.songs.length
+          || updatedPlaylist?.trackCount
+          || previousTrackCount;
+        const addedCount = Math.max(0, nextTrackCount - previousTrackCount);
+
+        showToast(
+          addedCount > 0
+            ? uiText.addSuccess(updatedPlaylist?.name || targetPlaylist?.name || uiText.playlists, addedCount)
+            : uiText.addNoop
+        );
+        closePlaylistModal();
+      } catch (error) {
+        console.error('Failed to add songs to NetEase playlist:', error);
+        showToast(error instanceof Error ? error.message : uiText.addNoop);
+      }
+      return;
+    }
 
     const { addedCount, playlistName } = appendSongKeysToPlaylist(playlistId, playlistModalState.pendingSongKeys);
     setSelectedPlaylistId(playlistId);
@@ -1185,19 +1653,17 @@ export default function App() {
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = '';
-    }
+    playbackRef.current?.clear();
+    if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+    audioObjectUrlRef.current = null;
   };
 
   const removeSongFromPlaybackQueue = (index: number) => {
+    rememberQueue();
     const nextQueue = playbackQueue.filter((_, queueIndex) => queueIndex !== index);
     setPlaybackQueue(nextQueue);
 
-    if (currentPlaybackPlaylistId) {
-      removeSongFromSavedPlaylist(currentPlaybackPlaylistId, index);
-    }
+    setCurrentPlaybackPlaylistId(null);
 
     if (nextQueue.length === 0) {
       clearPlayback();
@@ -1206,7 +1672,7 @@ export default function App() {
 
     if (index === currentIndex) {
       const nextIndex = Math.min(index, nextQueue.length - 1);
-      playSongs(nextQueue, nextIndex, currentPlaybackPlaylistId);
+      playSongs(nextQueue, nextIndex, null);
       return;
     }
 
@@ -1215,21 +1681,72 @@ export default function App() {
     }
   };
 
-  const handleRemoveFromPlaylist = (playlistId: string | null, index: number) => {
-    if (!playlistId) return;
+  const handleRemoveFromPlaylist = async (playlist: PlaylistCollection | null, songToRemove: Song, index: number) => {
+    if (!playlist) return;
 
-    if (currentPlaybackPlaylistId === playlistId) {
+    if (playlist.source === 'netease') {
+      const songId = getNetEaseSongIdFromSong(songToRemove);
+      if (!songId) {
+        return;
+      }
+
+      try {
+        await removeNetEaseSongsFromPlaylist(playlist.id, [songId]);
+
+        if (currentPlaybackPlaylistId === playlist.id) {
+          removeSongFromPlaybackQueue(index);
+        }
+      } catch (error) {
+        console.error('Failed to remove song from NetEase playlist:', error);
+        showToast(error instanceof Error ? error.message : uiText.deletePlaylistDescription);
+      }
+      return;
+    }
+
+    if (currentPlaybackPlaylistId === playlist.id) {
+      removeSongFromSavedPlaylist(playlist.id, index);
       removeSongFromPlaybackQueue(index);
       return;
     }
 
-    removeSongFromSavedPlaylist(playlistId, index);
+    removeSongFromSavedPlaylist(playlist.id, index);
   };
 
   const playDisplayedPlaylist = () => {
     if (!displayedPlaylist || displayedPlaylist.songs.length === 0) return;
     playSongs(displayedPlaylist.songs, 0, displayedPlaylist.id);
   };
+
+  const rememberQueue = () => setQueueUndo({ songs: playbackQueue, index: currentIndex, time: audioRef.current?.currentTime || 0, playing: Boolean(audioRef.current && !audioRef.current.paused), source: currentPlaybackPlaylistId });
+  const moveQueueSong = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0 || from >= playbackQueue.length || to >= playbackQueue.length) return;
+    rememberQueue();
+    const next = [...playbackQueue]; const [moved] = next.splice(from, 1); next.splice(to, 0, moved);
+    setPlaybackQueue(next);
+    setCurrentIndex(currentIndex === from ? to : from < currentIndex && to >= currentIndex ? currentIndex - 1 : from > currentIndex && to <= currentIndex ? currentIndex + 1 : currentIndex);
+    setCurrentPlaybackPlaylistId(null);
+  };
+  const undoQueue = () => {
+    if (!queueUndo) return;
+    const previous = queueUndo; setQueueUndo(null);
+    if (!previous.songs.length || previous.index < 0) { clearPlayback(); return; }
+    const restored = previous.songs[previous.index];
+    setPlaybackQueue(previous.songs); setCurrentIndex(previous.index); setSong(restored); setCurrentPlaybackPlaylistId(previous.source);
+    if (restored !== song || !audioRef.current?.src) {
+      if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+      const url = typeof restored.file === 'string' ? restored.file : restored.file ? URL.createObjectURL(restored.file) : '';
+      audioObjectUrlRef.current = typeof restored.file === 'string' ? null : url;
+      if (url) { initAudioContext(); playbackRef.current?.load(url, previous.playing, previous.time); }
+    }
+  };
+  const queueNext = (track: Song) => {
+    if (!hasActiveSong) { void playSongs([track], 0); return; }
+    rememberQueue(); const next = [...playbackQueue]; next.splice(currentIndex + 1, 0, track);
+    setPlaybackQueue(next); setCurrentPlaybackPlaylistId(null);
+    showToast(language === 'zh-CN' ? '已加入下一首播放' : 'Added to play next');
+  };
+  const queuePanel = <Playlist songs={playbackQueue} currentIndex={currentIndex} isPlaying={isPlaying} onSelect={playSong} onRemove={removeSongFromPlaybackQueue}
+    onMove={moveQueueSong} onClear={() => { rememberQueue(); clearPlayback(); }} onUndo={queueUndo ? undoQueue : undefined} language={language} />;
 
   const handleNext = () => {
     if (playbackQueue.length === 0) return;
@@ -1243,7 +1760,7 @@ export default function App() {
     } else {
       nextIndex = (currentIndex + 1) % playbackQueue.length;
       if (nextIndex === 0 && loopMode === 'none') {
-        setIsPlaying(false);
+        playbackRef.current?.pause();
         return;
       }
     }
@@ -1259,7 +1776,8 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+      if (event.key === 'Escape') { setShowDockQueue(false); setView('library'); return; }
+      if ((event.target as HTMLElement)?.closest('input, textarea, button, select, [contenteditable="true"], [role="slider"]')) {
         return;
       }
 
@@ -1301,12 +1819,34 @@ export default function App() {
   }, [currentIndex, playbackQueue, isShuffle, loopMode, isPlaying, volume]);
 
   const showPlaylistOverview = () => {
+    pendingNetEasePlaylistRequestRef.current = null;
+    setLoadingPlaylistId(null);
+
+    if (librarySourceMode === 'netease') {
+      lastLibrarySectionBySourceRef.current.netease = 'playlists';
+    } else {
+      lastLibrarySectionBySourceRef.current.local = 'playlists';
+    }
+
     setOpenedPlaylistId(null);
     setCurrentSection('playlists');
     setLastLibrarySection('playlists');
   };
 
   const openLibrarySection = (section: LibrarySection) => {
+    if (section !== 'playlists') {
+      pendingNetEasePlaylistRequestRef.current = null;
+      setLoadingPlaylistId(null);
+    }
+
+    if (librarySourceMode === 'local' && isLocalLibrarySection(section)) {
+      lastLibrarySectionBySourceRef.current.local = section;
+    }
+
+    if (librarySourceMode === 'netease' && isNetEaseLibrarySection(section)) {
+      lastLibrarySectionBySourceRef.current.netease = section;
+    }
+
     if (section === 'playlists') {
       showPlaylistOverview();
       return;
@@ -1316,13 +1856,130 @@ export default function App() {
     setLastLibrarySection(section);
   };
 
-  const openPlaylistDetails = (playlistId: string) => {
-    setSelectedPlaylistId(playlistId);
+  const openPlaylistDetails = async (playlistId: string) => {
+    if (savedPlaylists.some((playlist) => playlist.id === playlistId)) {
+      pendingNetEasePlaylistRequestRef.current = null;
+      setLoadingPlaylistId(null);
+      lastLibrarySectionBySourceRef.current.local = 'playlists';
+      setSelectedPlaylistId(playlistId);
+      setOpenedPlaylistId(playlistId);
+      setCurrentSection('playlists');
+      setLastLibrarySection('playlists');
+      return;
+    }
+
+    lastLibrarySectionBySourceRef.current.netease = 'playlists';
+    pendingNetEasePlaylistRequestRef.current = playlistId;
+    setLoadingPlaylistId(playlistId);
     setOpenedPlaylistId(playlistId);
     setCurrentSection('playlists');
     setLastLibrarySection('playlists');
+
+    const cloudPlaylist = await loadNetEasePlaylist(playlistId);
+    if (pendingNetEasePlaylistRequestRef.current !== playlistId) {
+      return;
+    }
+
+    pendingNetEasePlaylistRequestRef.current = null;
+    setLoadingPlaylistId(null);
+
+    if (!cloudPlaylist) {
+      setOpenedPlaylistId(null);
+      return;
+    }
+
+    setOpenedPlaylistId(cloudPlaylist.id);
   };
 
+  const switchLibrarySourceMode = (nextSource: 'local' | 'netease') => {
+    if (nextSource === librarySourceMode || isLibrarySourceTransitioning) {
+      return;
+    }
+
+    const nextSection = nextSource === 'local'
+      ? (isLocalLibrarySection(lastLibrarySectionBySourceRef.current.local) ? lastLibrarySectionBySourceRef.current.local : 'playlists')
+      : (isNetEaseLibrarySection(lastLibrarySectionBySourceRef.current.netease) ? lastLibrarySectionBySourceRef.current.netease : 'playlists');
+
+    if (librarySourceTransitionTimeoutRef.current !== null) {
+      window.clearTimeout(librarySourceTransitionTimeoutRef.current);
+    }
+
+    if (nextSource !== 'netease') {
+      pendingNetEasePlaylistRequestRef.current = null;
+      setLoadingPlaylistId(null);
+    }
+
+    setIsLibrarySourceTransitioning(true);
+
+    librarySourceTransitionTimeoutRef.current = window.setTimeout(() => {
+      setLibrarySourceMode(nextSource);
+      setLastLibrarySection(nextSection);
+
+      if (!isOverlaySection(currentSection)) {
+        setCurrentSection(nextSection);
+      }
+
+      window.requestAnimationFrame(() => {
+        setIsLibrarySourceTransitioning(false);
+      });
+      librarySourceTransitionTimeoutRef.current = null;
+    }, 180);
+  };
+
+  const navigateToNetEaseSearch = (request: Omit<LibrarySearchNavigationRequest, 'id'>) => {
+    const keyword = request.keyword.trim();
+    if (!keyword) {
+      return;
+    }
+
+    const nextRequest: LibrarySearchNavigationRequest = {
+      ...request,
+      id: searchNavigationRequestIdRef.current + 1,
+      keyword,
+      preferredName: request.preferredName?.trim(),
+      preferredArtist: request.preferredArtist?.trim(),
+    };
+
+    searchNavigationRequestIdRef.current = nextRequest.id;
+    pendingNetEasePlaylistRequestRef.current = null;
+    setLoadingPlaylistId(null);
+    setOpenedPlaylistId(null);
+    setSelectedPlaylistId(null);
+    lastLibrarySectionBySourceRef.current.netease = 'search';
+    setLastLibrarySection('search');
+    setSearchNavigationRequest(nextRequest);
+    setView('library');
+
+    if (librarySourceMode === 'netease') {
+      setCurrentSection('search');
+      return;
+    }
+
+    switchLibrarySourceMode('netease');
+  };
+
+  const handleSearchNavigationHandled = (requestId: number) => {
+    setSearchNavigationRequest((current) => (
+      current && current.id === requestId ? null : current
+    ));
+  };
+
+  const handleOpenCurrentAlbum = () => {
+    if (!hasActiveSong || !song.album?.trim()) {
+      return;
+    }
+
+    navigateToNetEaseSearch({
+      keyword: song.album,
+      mode: 'album',
+      autoOpen: true,
+      preferredName: song.album,
+      preferredArtist: song.artist,
+    });
+  };
+
+  // Settings and EQ are overlay sections layered on top of the last active library
+  // section, so closing them returns the user to the prior navigation context.
   const toggleOverlaySection = (section: 'settings' | 'eq') => {
     if (currentSection === section) {
       setCurrentSection(lastLibrarySection);
@@ -1358,27 +2015,46 @@ export default function App() {
   };
 
   const handleCreatePlaylist = () => {
+    if (librarySourceMode === 'netease') {
+      if (!neteaseSession.isLoggedIn) {
+        showToast(uiText.neteasePlaylistLoginRequired);
+        return;
+      }
+
+      openCreatePlaylistModalForScope('netease', {
+        pendingSongKeys: [],
+        pendingSongIds: [],
+        openPlaylistsAfterCreate: true,
+        allowScopeSelection: false,
+      });
+      return;
+    }
+
     openCreatePlaylistModal([], true);
   };
 
   const isShowingPlaylistOverview = currentSection === 'playlists' && !displayedPlaylist;
   const overlaySection = isOverlaySection(currentSection) ? currentSection : null;
   const activeLibrarySection = overlaySection ? lastLibrarySection : currentSection;
-
-  const sidebarItems: Array<{ id: LibrarySection; label: string; icon: React.ReactNode }> = [
-    { id: 'playlists', label: uiText.playlists, icon: <ListMusic size={18} /> },
-    { id: 'all', label: uiText.allSongs, icon: <Music size={18} /> },
-    { id: 'artists', label: uiText.artists, icon: <User size={18} /> },
-    { id: 'albums', label: uiText.albums, icon: <Disc size={18} /> },
-    { id: 'search', label: uiText.search, icon: <Search size={18} /> },
-  ];
+  const modalTargetPlaylists = playlistModalState?.type === 'pick-playlist'
+    ? playlistModalState.scope === 'netease'
+      ? editableNetEasePlaylists
+      : savedPlaylists
+    : [];
+  const isPlayerExpanded = view === 'player';
+  const reducedPageMotion = useReducedMotion();
+  const [homeReady, setHomeReady] = useState(true);
+  const latestView = useRef(view);
+  latestView.current = view;
+  useEffect(() => { if (view === 'player') setHomeReady(false); }, [view]);
+  const isHomeVisible = !isPlayerExpanded && homeReady;
 
   const currentWindowSubtitle = currentSection === 'settings'
     ? uiText.settings
     : currentSection === 'eq'
       ? uiText.eq
-    : view === 'player'
-      ? (hasActiveSong ? `${uiText.nowPlaying} · ${song.title}` : uiText.noPlaybackTitle)
+    : isPlayerExpanded
+      ? (hasActiveSong ? `${uiText.nowPlaying} 路 ${song.title}` : uiText.noPlaybackTitle)
       : sidebarItems.find((item) => item.id === activeLibrarySection)?.label || uiText.brandSubtitle;
 
   return (
@@ -1439,29 +2115,72 @@ export default function App() {
         transparentBackground={isTransparentBackgroundActive}
       />
       <audio ref={audioRef} />
+      {hasActiveSong && (playbackStatus === 'loading' || playbackStatus === 'buffering' || playbackStatus === 'error') && (
+        <div role="status" aria-live="polite" className="absolute top-16 left-1/2 -translate-x-1/2 z-110 flex items-center gap-3 rounded-2xl border border-white/15 bg-black/85 px-4 py-3 text-sm text-white shadow-xl">
+          <span>{language === 'zh-CN'
+            ? (playbackStatus === 'error' ? '播放失败，请检查文件或网络后重试' : playbackStatus === 'buffering' ? '正在缓冲…' : '正在加载音频…')
+            : (playbackStatus === 'error' ? 'Playback failed. Check the file or connection and retry.' : playbackStatus === 'buffering' ? 'Buffering…' : 'Loading audio…')}</span>
+          {playbackStatus === 'error' && <button type="button" onClick={togglePlay} className="shrink-0 rounded-lg bg-white px-3 py-1 text-black">{language === 'zh-CN' ? '重试' : 'Retry'}</button>}
+        </div>
+      )}
 
-      <AnimatePresence mode="wait">
-        {view === 'library' ? (
-          <motion.div
-            key="library"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="h-full w-full p-4 pb-32 md:p-6 md:pb-36"
-          >
-            <div className="h-full flex gap-4 min-w-0">
-              <aside className="min-h-0 w-[clamp(14rem,24vw,18rem)] rounded-4xl border border-white/10 bg-black/25 backdrop-blur-3xl customizable-backdrop-strong shadow-2xl flex flex-col overflow-hidden shrink-0">
-                <div className="px-5 pt-5 pb-4 border-b border-white/10">
-                  <div className="flex items-center gap-3">
-                    <AppLogo className="h-12 w-12 rounded-[18px]" />
-                    <div className="min-w-0">
-                      <p className="text-xs font-mono uppercase tracking-[0.24em] text-white/35">{APP_NAME}</p>
-                      <h1 className="mt-1 text-2xl font-black tracking-tight text-white">{uiText.brandTitle}</h1>
-                      <p className="mt-1 text-sm text-white/40">{uiText.brandSubtitle}</p>
-                    </div>
-                  </div>
+      <div
+        aria-hidden={!isHomeVisible}
+        inert={!isHomeVisible}
+        className={cn('h-full w-full p-4 pb-32 md:p-6 md:pb-36', isHomeVisible ? 'rf-home-enter' : 'pointer-events-none')}
+        style={{ visibility: isHomeVisible ? 'visible' : 'hidden', contentVisibility: isHomeVisible ? 'visible' : 'hidden' }}
+      >
+        <div className="h-full flex gap-4 min-w-0">
+          <aside className="rf-sidebar rf-glass min-h-0 w-[clamp(14rem,24vw,18rem)] rounded-4xl flex flex-col overflow-hidden shrink-0">
+            <div className="rf-sidebar-brand px-5 pt-5 pb-4 border-b border-white/10">
+              <div className="flex items-center gap-3">
+                <AppLogo className="h-12 w-12 rounded-[18px]" />
+                <div className="min-w-0">
+                  <p className="text-xs font-mono uppercase tracking-[0.24em] text-white/35">{APP_NAME}</p>
+                  <h1 className="mt-1 text-2xl font-black tracking-tight text-white">{uiText.brandTitle}</h1>
+                  <p className="mt-1 text-sm text-white/40">{uiText.brandSubtitle}</p>
                 </div>
+              </div>
+            </div>
 
+            <div className="px-4 pt-4 pb-3 border-b border-white/10">
+              <div className="grid grid-cols-2 gap-2 rounded-3xl border border-white/10 bg-white/5 p-1">
+                <button
+                  type="button"
+                  onClick={() => switchLibrarySourceMode('local')}
+                  disabled={isLibrarySourceTransitioning}
+                  className={cn(
+                    'rounded-2xl px-4 py-2 text-sm font-semibold transition-all disabled:cursor-default disabled:opacity-60',
+                    librarySourceMode === 'local'
+                      ? 'bg-white text-black shadow-lg'
+                      : 'text-white/65 hover:text-white hover:bg-white/10'
+                  )}
+                >
+                  {uiText.localScope}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchLibrarySourceMode('netease')}
+                  disabled={isLibrarySourceTransitioning}
+                  className={cn(
+                    'rounded-2xl px-4 py-2 text-sm font-semibold transition-all disabled:cursor-default disabled:opacity-60',
+                    librarySourceMode === 'netease'
+                      ? 'bg-white text-black shadow-lg'
+                      : 'text-white/65 hover:text-white hover:bg-white/10'
+                  )}
+                >
+                  {uiText.neteaseScope}
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <motion.div
+                animate={isLibrarySourceTransitioning ? { opacity: 0, filter: 'blur(18px)' } : { opacity: 1, filter: 'none' }}
+                transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                className={cn('min-h-0 h-full flex flex-col', isLibrarySourceTransitioning && 'pointer-events-none')}
+                style={{ willChange: isLibrarySourceTransitioning ? 'opacity, filter' : 'auto' }}
+              >
                 <div className="p-4 border-b border-white/10 space-y-2">
                   {sidebarItems.map((item) => {
                     const isActive = activeLibrarySection === item.id && !overlaySection;
@@ -1489,126 +2208,136 @@ export default function App() {
                     <div>
                       <p className="text-xs font-mono uppercase tracking-[0.18em] text-white/35">{uiText.playlists}</p>
                       <p className="text-xs text-white/30 mt-1 truncate">
-                        {isShowingPlaylistOverview ? uiText.playlistOverview : displayedPlaylist?.name || uiText.playlistOverview}
+                        {librarySourceMode === 'netease'
+                          ? neteaseStatusDetail
+                          : (isShowingPlaylistOverview ? uiText.playlistOverview : displayedPlaylist?.name || uiText.playlistOverview)}
                       </p>
                     </div>
                     <button
                       type="button"
                       onClick={handleCreatePlaylist}
-                      className="w-9 h-9 rounded-full border border-white/10 bg-white/5 text-white/65 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center"
-                      title={uiText.createPlaylist}
+                      disabled={librarySourceMode === 'netease' && !neteaseSession.isLoggedIn}
+                      className="w-9 h-9 rounded-full border border-white/10 bg-white/5 text-white/65 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center disabled:opacity-35 disabled:hover:bg-white/5 disabled:hover:text-white/65"
+                      aria-label={uiText.createPlaylist}
                     >
-                      <Plus size={16} />
+                      <Plus className="w-4 h-4" />
                     </button>
                   </div>
 
-                  <div className="min-h-0 overflow-y-auto px-3 pb-4 scrollbar-hide space-y-2">
-                    {savedPlaylists.map((playlist) => {
-                      const isViewingPlaylist = currentSection === 'playlists' && openedPlaylistId === playlist.id;
-                      const isSelectedTarget = selectedPlaylistId === playlist.id;
-                      const isPlayingPlaylist = currentPlaybackPlaylistId === playlist.id;
-                      return (
-                        <div
-                          key={playlist.id}
-                          className={cn(
-                            'w-full rounded-2xl px-3 py-3 transition-all border',
-                            isViewingPlaylist
-                              ? 'bg-white/12 border-white/20 text-white shadow-lg'
-                              : isSelectedTarget
-                                ? 'bg-white/8 border-white/12 text-white'
-                                : 'bg-white/5 border-transparent text-white/65 hover:bg-white/10 hover:text-white'
-                          )}
-                        >
-                          <div className="flex items-center gap-2">
+                  <div className="min-h-0 flex-1 px-4 pb-4 overflow-y-auto space-y-2 pr-2 thin-scrollbar">
+                    {visibleLibraryPlaylists.length === 0 ? (
+                      <div className="home-glass-card rounded-3xl border border-dashed px-4 py-5 text-sm text-white/45 customizable-backdrop-medium">
+                        {librarySourceMode === 'netease'
+                          ? (neteaseSession.isLoggedIn ? uiText.neteaseNoPlaylists : uiText.neteasePlaylistLoginRequired)
+                          : uiText.playlistEmpty}
+                      </div>
+                    ) : (
+                      visibleLibraryPlaylists.map((playlist) => {
+                        const isActive = displayedPlaylist?.id === playlist.id && !isShowingPlaylistOverview;
+                        const isNetEasePlaylist = playlist.source === 'netease';
+                        const previewImage = isNetEasePlaylist ? (playlist.cover || playlist.songs[0]?.cover) : null;
+                        const songCount = isNetEasePlaylist ? (playlist.trackCount ?? playlist.songs.length) : playlist.songs.length;
+
+                        return (
+                          <div
+                            key={playlist.id}
+                            className={cn(
+                              'group rounded-3xl border transition-all overflow-hidden',
+                              isActive
+                                ? 'border-white/40 bg-white text-black shadow-2xl'
+                                : 'home-glass-card home-glass-card-interactive customizable-backdrop-medium text-white/85 hover:text-white'
+                            )}
+                          >
                             <button
                               type="button"
-                              onClick={() => openPlaylistDetails(playlist.id)}
-                              className="flex flex-1 min-w-0 items-center justify-between gap-3 text-left px-1"
+                              onClick={() => {
+                                void openPlaylistDetails(playlist.id);
+                              }}
+                              className="w-full px-4 py-4 text-left"
                             >
-                              <div className="flex items-center gap-3 min-w-0 flex-1">
-                                <div className="w-11 h-11 rounded-2xl overflow-hidden bg-white/5 shrink-0">
-                                  {playlist.songs[0]?.cover ? (
-                                    <img src={playlist.songs[0].cover} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                                  ) : (
-                                    <div className="w-full h-full flex items-center justify-center text-white/15">
-                                      <Music size={16} />
-                                    </div>
-                                  )}
-                                </div>
-
-                                <div className="min-w-0">
-                                  <p className="truncate font-semibold">{playlist.name}</p>
-                                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                                    <p className="text-xs text-white/35 truncate">{uiText.songsCount(playlist.songs.length)}</p>
-                                    {isViewingPlaylist && (
-                                      <span className="rounded-full border border-white/10 bg-white/8 px-2 py-0.5 text-[10px] font-semibold text-white/70">
-                                        {uiText.viewingPlaylist}
-                                      </span>
-                                    )}
-                                    {isSelectedTarget && (
-                                      <span className="rounded-full border border-white/10 bg-white/8 px-2 py-0.5 text-[10px] font-semibold text-white/70">
-                                        {uiText.activeTarget}
-                                      </span>
-                                    )}
-                                    {isPlayingPlaylist && (
-                                      <span className="rounded-full border border-white/10 bg-white/8 px-2 py-0.5 text-[10px] font-semibold text-white/70">
-                                        {uiText.playbackSource}
-                                      </span>
+                              <div className={cn('min-w-0', isNetEasePlaylist && 'flex items-center gap-3')}>
+                                {isNetEasePlaylist ? (
+                                  <div className="w-11 h-11 rounded-2xl overflow-hidden bg-black/10 shrink-0">
+                                    {previewImage ? (
+                                      <img src={previewImage} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center text-white/15">
+                                        <Music size={16} />
+                                      </div>
                                     )}
                                   </div>
+                                ) : null}
+
+                                <div className="min-w-0 flex-1">
+                                  <p className={cn(
+                                    'truncate text-sm font-semibold',
+                                    isActive ? 'text-black' : 'text-white/80'
+                                  )}>
+                                    {playlist.name}
+                                  </p>
+                                  <p className={cn(
+                                    'mt-1 text-xs truncate',
+                                    isActive ? 'text-black/55' : 'text-white/35'
+                                  )}>
+                                    {songCount} {uiText.songCountLabel}
+                                  </p>
                                 </div>
                               </div>
-                              {isPlayingPlaylist && <div className="w-2.5 h-2.5 rounded-full bg-white shrink-0" />}
                             </button>
-
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => openRenamePlaylistModal(playlist.id)}
-                                className="w-8 h-8 rounded-full border border-white/10 bg-white/5 text-white/55 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center"
-                                title={uiText.renamePlaylist}
-                              >
-                                <Pencil size={14} />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openDeletePlaylistModal(playlist.id)}
-                                className="w-8 h-8 rounded-full border border-white/10 bg-white/5 text-white/45 hover:text-red-300 hover:bg-white/10 transition-all flex items-center justify-center"
-                                title={uiText.deletePlaylist}
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })
+                    )}
                   </div>
                 </div>
-              </aside>
-
-              <section className="min-h-0 min-w-0 flex-1 rounded-4xl border border-white/10 bg-black/20 backdrop-blur-3xl customizable-backdrop-strong shadow-2xl overflow-hidden relative">
-                <Library
-                  songs={librarySongs}
-                  playlists={savedPlaylists}
-                  isLoading={isLoadingLibrary}
-                  language={language}
-                  section={activeLibrarySection}
-                  displayedPlaylist={displayedPlaylist}
-                  currentPlaybackPlaylistId={currentPlaybackPlaylistId}
-                  currentPlaybackIndex={currentIndex}
-                  onBackToPlaylistsOverview={showPlaylistOverview}
-                  onOpenPlaylist={openPlaylistDetails}
-                  onPlaySongs={playSongs}
-                  onAddSongToPlaylist={requestAddSongToPlaylist}
-                  onAddSongsToPlaylist={requestAddSongsToPlaylist}
-                  onPlaySelectedPlaylist={playDisplayedPlaylist}
-                  onRemoveSongFromPlaylist={(index) => handleRemoveFromPlaylist(displayedPlaylist?.id ?? null, index)}
-                />
-              </section>
+              </motion.div>
             </div>
+          </aside>
 
-            <MiniPlayer
+          <section className="rf-library-panel rf-glass min-h-0 min-w-0 flex-1 rounded-4xl overflow-hidden relative">
+            <motion.div
+              animate={isLibrarySourceTransitioning ? { opacity: 0, filter: 'blur(18px)' } : { opacity: 1, filter: 'none' }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              className={cn('h-full', isLibrarySourceTransitioning && 'pointer-events-none')}
+              style={{ willChange: isLibrarySourceTransitioning ? 'opacity, filter' : 'auto' }}
+            >
+              <Library
+                currentSong={hasActiveSong ? song : null}
+                onQueueNext={queueNext}
+                songs={librarySongs}
+                playlists={visibleLibraryPlaylists}
+                isLoading={isLoadingLibrary}
+                isPlaylistDetailLoading={loadingPlaylistId !== null && loadingPlaylistId === openedPlaylistId}
+                language={language}
+                section={activeLibrarySection}
+                displayedPlaylist={displayedPlaylist}
+                currentPlaybackPlaylistId={currentPlaybackPlaylistId}
+                currentPlaybackIndex={currentIndex}
+                onBackToPlaylistsOverview={showPlaylistOverview}
+                onOpenPlaylist={(playlistId) => {
+                  void openPlaylistDetails(playlistId);
+                }}
+                onPlaySongs={playSongs}
+                onAddSongToPlaylist={requestAddSongToPlaylist}
+                onAddSongsToPlaylist={requestAddSongsToPlaylist}
+                onPlaySelectedPlaylist={playDisplayedPlaylist}
+                onRemoveSongFromPlaylist={(songToRemove, index) => {
+                  void handleRemoveFromPlaylist(displayedPlaylist, songToRemove, index);
+                }}
+                searchNavigationRequest={searchNavigationRequest}
+                onSearchNavigationHandled={handleSearchNavigationHandled}
+                onRequestSearchNavigation={navigateToNetEaseSearch}
+              />
+            </motion.div>
+          </section>
+        </div>
+
+        <AnimatePresence>
+          {isHomeVisible && (
+              <MiniPlayer
+                audioRef={audioRef}
+              currentTime={currentTime} duration={duration} onSeek={handleSeek} status={playbackStatus} language={language}
+              showQueue={showDockQueue} onToggleQueue={() => setShowDockQueue((value) => !value)} queueCount={playbackQueue.length}
               hasActiveSong={hasActiveSong}
               isPlaying={isPlaying}
               onTogglePlay={togglePlay}
@@ -1622,145 +2351,164 @@ export default function App() {
               onVolumeChange={setVolume}
               emptyActionLabel={uiText.openPlayerHint}
             />
-          </motion.div>
-        ) : (
-          <motion.main
-            key="player"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            className={cn(
-              'relative h-full w-full flex flex-col md:flex-row items-center justify-center gap-12 p-8 md:p-24 transition-all duration-700',
-              (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'justify-center' : ''
-            )}
+          )}
+        </AnimatePresence>
+      </div>
+
+      {isHomeVisible && showDockQueue && <div className="rf-queue-popover rf-glass"><button className="absolute top-1 right-2 text-xs text-white/55 px-2" aria-label={language === 'zh-CN' ? '关闭队列' : 'Close queue'} onClick={() => setShowDockQueue(false)}>×</button>{queuePanel}</div>}
+      <AnimatePresence mode="wait" onExitComplete={() => { if (latestView.current === 'library') setHomeReady(true); }}>
+        {isPlayerExpanded && (
+          <motion.div
+            key="player-overlay"
+            initial={{ opacity: 0, y: reducedPageMotion ? 0 : 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: reducedPageMotion ? 0 : 6, transition: { duration: reducedPageMotion ? 0 : 0.14 } }}
+            transition={{ duration: reducedPageMotion ? 0 : 0.24, ease: [0.22, 1, 0.36, 1] }}
+            className="absolute inset-x-0 top-14 bottom-0 z-90"
           >
-            {isPersonalizedBackgroundActive && (
-              <div
-                className={cn(
-                  'pointer-events-none absolute inset-0',
-                  isCustomBackgroundActive ? 'bg-black/8 customizable-backdrop-strong' : 'bg-black/12'
-                )}
-              />
-            )}
-
-            <div className="absolute top-6 right-6 z-50">
-              <div className="flex gap-4">
-                <button
-                  onClick={() => setIsFullScreen((value) => !value)}
-                  className="p-3 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md transition-all"
-                >
-                  {isFullScreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
-                </button>
-              </div>
-            </div>
-
-            <AnimatePresence mode="wait">
-              {!isFullScreen && (
-                <motion.div
-                  layout
-                  initial={{ opacity: 0, x: -50 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -50 }}
+            <motion.main
+              key="player"
+              initial={false}
+              className={cn(
+                'relative h-full w-full flex flex-col md:flex-row items-center justify-center gap-12 p-8 md:p-24 transition-all duration-700',
+                (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'justify-center' : ''
+              )}
+            >
+              {isPersonalizedBackgroundActive && (
+                <div
                   className={cn(
-                    'relative z-10 flex flex-col items-center gap-12 transition-all duration-700',
-                    (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'w-full' : 'w-full md:w-1/2'
+                    'pointer-events-none absolute inset-0',
+                    isCustomBackgroundActive ? 'bg-black/8 customizable-backdrop-strong' : 'bg-black/12'
                   )}
-                >
-                  <motion.div
-                    animate={{ scale: hasActiveSong && isPlaying ? 1 : 0.9 }}
-                    transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                    className="w-64 h-64 md:w-96 md:h-96 rounded-2xl overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.5)] relative bg-white/5"
+                />
+              )}
+
+              <div className="absolute top-6 right-6 z-50">
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => setIsFullScreen((value) => !value)}
+                    className="p-3 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md transition-all"
                   >
-                    {song.cover ? (
-                      <img
-                        src={song.cover}
-                        alt={song.title}
-                        className="w-full h-full object-cover"
-                        referrerPolicy="no-referrer"
-                      />
+                    {isFullScreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
+                  </button>
+                </div>
+              </div>
+
+              <AnimatePresence mode="wait" initial={false}>
+                {!isFullScreen && (
+                  <motion.div
+                    initial={{ opacity: 0, x: -50 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -50 }}
+                    className={cn(
+                      'relative z-10 flex flex-col items-center gap-12 transition-all duration-700',
+                      (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'w-full' : 'w-full md:w-1/2'
+                    )}
+                  >
+                    <motion.button
+                      type="button"
+                      onClick={handleOpenCurrentAlbum}
+                      disabled={!hasActiveSong || !song.album?.trim()}
+                      animate={{ scale: hasActiveSong && isPlaying ? 1 : 0.9 }}
+                      transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                      className="group relative h-64 w-64 overflow-hidden rounded-2xl bg-white/5 shadow-[0_40px_100px_rgba(0,0,0,0.5)] md:h-96 md:w-96 disabled:cursor-default"
+                    >
+                      {song.cover ? (
+                        <img
+                          src={song.cover}
+                          alt={song.title}
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <Music className="text-white/10 w-32 h-32" />
+                        </div>
+                      )}
+                      {hasActiveSong && song.album?.trim() && (
+                        <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-linear-to-t from-black/55 via-black/0 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+                          <span className="mb-5 rounded-full border border-white/15 bg-black/35 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-white/85 backdrop-blur-xl">
+                            {language === 'zh-CN' ? '打开专辑' : 'Open Album'}
+                          </span>
+                        </div>
+                      )}
+                    </motion.button>
+
+                    <PlayerControls
+                      visualizerMode={visualizerMode}
+                      audioRef={audioRef}
+                      language={language}
+                      isPlaying={isPlaying}
+                      controlsDisabled={!hasActiveSong}
+                      onTogglePlay={togglePlay}
+                      onNext={handleNext}
+                      onPrev={handlePrev}
+                      currentTime={currentTime}
+                      duration={duration}
+                      onSeek={handleSeek}
+                      title={hasActiveSong ? song.title : uiText.noPlaybackTitle}
+                      artist={hasActiveSong ? song.artist : uiText.noPlaybackSubtitle}
+                      analyser={analyser}
+                      volume={volume}
+                      onVolumeChange={setVolume}
+                      loopMode={loopMode}
+                      onToggleLoop={() => {
+                        if (loopMode === 'none') setLoopMode('all');
+                        else if (loopMode === 'all') setLoopMode('one');
+                        else setLoopMode('none');
+                      }}
+                      isShuffle={isShuffle}
+                      onToggleShuffle={() => setIsShuffle((value) => !value)}
+                      showPlaylist={showPlaylist}
+                      onTogglePlaylist={() => {
+                        setShowPlaylist((value) => !value);
+                        if (!showPlaylist) setShowLyrics(false);
+                      }}
+                      showLyrics={showLyrics}
+                      onToggleLyrics={() => {
+                        setShowLyrics((value) => !value);
+                        if (!showLyrics) setShowPlaylist(false);
+                      }}
+                      onMinimize={() => setView('library')}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <AnimatePresence mode="wait" initial={false}>
+                {hasActiveSong && (showLyrics || showPlaylist) && (
+                  <motion.div
+                    key={showLyrics ? 'lyrics' : 'playlist'}
+                    initial={{ opacity: 0, x: 50 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 50 }}
+                    transition={{ duration: 0.3 }}
+                    className={cn(
+                      'relative z-10 h-full flex flex-col justify-center transition-all duration-700',
+                      isFullScreen ? 'w-full max-w-4xl' : 'w-full md:w-1/2'
+                    )}
+                  >
+                    {showLyrics ? (
+                      isLoadingLyrics ? (
+                        <div className="flex flex-col items-center gap-4 opacity-50">
+                          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                          <p className="text-sm font-mono tracking-widest uppercase">Searching Lyrics...</p>
+                        </div>
+                      ) : lyrics.length > 0 ? (
+                        <LyricsView lyrics={lyrics} currentTime={currentTime} audioRef={audioRef} onSeek={handleSeek} />
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-white/20 text-2xl font-bold">
+                          暂无歌词
+                        </div>
+                      )
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <Music className="text-white/10 w-32 h-32" />
-                      </div>
+                      <div className="rf-glass h-full rounded-3xl overflow-hidden">{queuePanel}</div>
                     )}
                   </motion.div>
-
-                  <PlayerControls
-                    isPlaying={isPlaying}
-                    controlsDisabled={!hasActiveSong}
-                    onTogglePlay={togglePlay}
-                    onNext={handleNext}
-                    onPrev={handlePrev}
-                    currentTime={currentTime}
-                    duration={duration}
-                    onSeek={handleSeek}
-                    title={hasActiveSong ? song.title : uiText.noPlaybackTitle}
-                    artist={hasActiveSong ? song.artist : uiText.noPlaybackSubtitle}
-                    analyser={analyser}
-                    volume={volume}
-                    onVolumeChange={setVolume}
-                    loopMode={loopMode}
-                    onToggleLoop={() => {
-                      if (loopMode === 'none') setLoopMode('all');
-                      else if (loopMode === 'all') setLoopMode('one');
-                      else setLoopMode('none');
-                    }}
-                    isShuffle={isShuffle}
-                    onToggleShuffle={() => setIsShuffle((value) => !value)}
-                    showPlaylist={showPlaylist}
-                    onTogglePlaylist={() => {
-                      setShowPlaylist((value) => !value);
-                      if (!showPlaylist) setShowLyrics(false);
-                    }}
-                    showLyrics={showLyrics}
-                    onToggleLyrics={() => {
-                      setShowLyrics((value) => !value);
-                      if (!showLyrics) setShowPlaylist(false);
-                    }}
-                    onMinimize={() => setView('library')}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            <AnimatePresence mode="wait">
-              {hasActiveSong && (showLyrics || showPlaylist) && (
-                <motion.div
-                  key={showLyrics ? 'lyrics' : 'playlist'}
-                  initial={{ opacity: 0, x: 50 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 50 }}
-                  transition={{ duration: 0.3 }}
-                  className={cn(
-                    'relative z-10 h-full flex flex-col justify-center transition-all duration-700',
-                    isFullScreen ? 'w-full max-w-4xl' : 'w-full md:w-1/2'
-                  )}
-                >
-                  {showLyrics ? (
-                    isLoadingLyrics ? (
-                      <div className="flex flex-col items-center gap-4 opacity-50">
-                        <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                        <p className="text-sm font-mono tracking-widest uppercase">Searching Lyrics...</p>
-                      </div>
-                    ) : lyrics.length > 0 ? (
-                      <LyricsView lyrics={lyrics} currentTime={currentTime} onSeek={handleSeek} />
-                    ) : (
-                      <div className="h-full flex items-center justify-center text-white/20 text-2xl font-bold">
-                        暂无歌词
-                      </div>
-                    )
-                  ) : (
-                    <Playlist
-                      songs={playbackQueue}
-                      currentIndex={currentIndex}
-                      onSelect={playSong}
-                      onRemove={removeSongFromPlaybackQueue}
-                    />
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.main>
+                )}
+              </AnimatePresence>
+            </motion.main>
+          </motion.div>
         )}
       </AnimatePresence>
 
@@ -1776,6 +2524,8 @@ export default function App() {
             <div className="h-full rounded-4xl border border-white/10 bg-black/45 backdrop-blur-3xl customizable-backdrop-strong shadow-2xl overflow-hidden">
               {overlaySection === 'settings' ? (
                 <SettingsView
+                  visualizerMode={visualizerMode}
+                  onVisualizerModeChange={setVisualizerMode}
                   copy={settingsCopy}
                   language={language}
                   onLanguageChange={setLanguage}
@@ -1785,6 +2535,22 @@ export default function App() {
                   onOpenFolder={openFolder}
                   onRefreshLibrary={handleManualLibraryRefresh}
                   isRefreshingLibrary={isLoadingLibrary}
+                  neteaseCookie={neteaseCookieDraft}
+                  neteaseStatusText={neteaseStatusText}
+                  neteaseStatusDetail={neteaseStatusDetail}
+                  neteaseAvatarUrl={neteaseSession.account?.avatarUrl ?? null}
+                  neteaseQrImage={neteaseQrState?.qrImage ?? null}
+                  neteaseQrStatusText={neteaseQrStatusText}
+                  isNetEaseLoggedIn={neteaseSession.isLoggedIn}
+                  isSavingNetEaseSession={isSavingNetEaseSession}
+                  isLoadingNetEasePlaylists={isLoadingNetEasePlaylists}
+                  onNetEaseCookieChange={setNetEaseCookieDraft}
+                  onNetEaseLoginWithCookie={loginNetEaseWithCookie}
+                  onNetEaseLogout={logoutNetEase}
+                  onNetEaseStartQrLogin={startNetEaseQrLogin}
+                  onNetEaseRefreshPlaylists={() => {
+                    void refreshNetEasePlaylists();
+                  }}
                   effect={effect}
                   backgroundSource={backgroundSource}
                   hasCustomBackground={Boolean(customBackgroundImage)}
@@ -1852,6 +2618,35 @@ export default function App() {
                     {playlistModalState.type === 'create-playlist' ? uiText.createPlaylistDescription : uiText.renamePlaylistDescription}
                   </p>
 
+                  {playlistModalState.type === 'create-playlist' && playlistModalState.allowScopeSelection && (
+                    <div className="mt-6 grid grid-cols-2 gap-2 rounded-3xl border border-white/10 bg-white/5 p-1">
+                      <button
+                        type="button"
+                        onClick={() => updateCreatePlaylistModalScope('local')}
+                        className={cn(
+                          'rounded-2xl px-4 py-2 text-sm font-semibold transition-all',
+                          playlistModalState.scope === 'local'
+                            ? 'bg-white text-black'
+                            : 'text-white/65 hover:text-white hover:bg-white/10'
+                        )}
+                      >
+                        {uiText.localScope}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateCreatePlaylistModalScope('netease')}
+                        className={cn(
+                          'rounded-2xl px-4 py-2 text-sm font-semibold transition-all',
+                          playlistModalState.scope === 'netease'
+                            ? 'bg-white text-black'
+                            : 'text-white/65 hover:text-white hover:bg-white/10'
+                        )}
+                      >
+                        {uiText.neteaseScope}
+                      </button>
+                    </div>
+                  )}
+
                   <div className="mt-6">
                     <input
                       type="text"
@@ -1877,7 +2672,9 @@ export default function App() {
                       disabled={!playlistNameDraft.trim()}
                       className="rounded-2xl px-4 py-3 bg-white text-black font-semibold disabled:opacity-40 transition-all"
                     >
-                      {playlistModalState.type === 'create-playlist' ? uiText.createAndAdd : uiText.save}
+                      {playlistModalState.type === 'create-playlist'
+                        ? (playlistModalState.pendingSongKeys.length > 0 || playlistModalState.pendingSongIds.length > 0 ? uiText.createAndAdd : uiText.createPlaylist)
+                        : uiText.save}
                     </button>
                   </div>
                 </>
@@ -1887,7 +2684,7 @@ export default function App() {
                   <p className="mt-2 text-sm text-white/45">{uiText.choosePlaylistDescription}</p>
 
                   <div className="mt-6 space-y-2 max-h-72 overflow-y-auto scrollbar-hide pr-1">
-                    {savedPlaylists.map((playlist) => (
+                    {modalTargetPlaylists.map((playlist) => (
                       <button
                         key={playlist.id}
                         type="button"
@@ -1895,7 +2692,7 @@ export default function App() {
                         className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left hover:bg-white/10 transition-all"
                       >
                         <p className="font-semibold text-white truncate">{playlist.name}</p>
-                        <p className="mt-1 text-xs text-white/35">{uiText.songsCount(playlist.songs.length)}</p>
+                        <p className="mt-1 text-xs text-white/35">{uiText.songsCount(playlist.trackCount ?? playlist.songs.length)}</p>
                       </button>
                     ))}
                   </div>
@@ -1912,7 +2709,12 @@ export default function App() {
                       type="button"
                       onClick={() => {
                         closePlaylistModal();
-                        openCreatePlaylistModalWithSongKeys(playlistModalState.pendingSongKeys, false);
+                        openCreatePlaylistModalForScope(playlistModalState.scope, {
+                          pendingSongKeys: playlistModalState.pendingSongKeys,
+                          pendingSongIds: playlistModalState.pendingSongIds,
+                          openPlaylistsAfterCreate: false,
+                          allowScopeSelection: false,
+                        });
                       }}
                       className="rounded-2xl px-4 py-3 bg-white text-black font-semibold transition-all"
                     >

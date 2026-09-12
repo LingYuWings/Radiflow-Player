@@ -1,147 +1,34 @@
-import React from 'react';
-import { motion } from 'motion/react';
-import { Music, Play, Trash2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Music, Play, Pause, Trash2, GripVertical, ArrowUp, ArrowDown, Undo2 } from 'lucide-react';
 import { cn } from '../lib/utils';
-
-interface Song {
-  title: string;
-  artist: string;
-  album?: string;
-  cover?: string;
-  lrc: string;
-  file?: File | string;
-}
-
+import type { Song } from '../types/player';
 interface PlaylistProps {
-  title?: string;
-  subtitle?: string;
-  songs: Song[];
-  currentIndex: number;
-  isCurrentPlayback?: boolean;
-  onSelect: (index: number) => void;
-  onRemove: (index: number) => void;
-  onPlayPlaylist?: () => void;
-  playLabel?: string;
-  emptyTitle?: string;
-  emptyDescription?: string;
-  getSecondaryText?: (song: Song) => string;
+  title?: string; subtitle?: string; songs: Song[]; currentIndex: number; isCurrentPlayback?: boolean;
+  isPlaying?: boolean; onSelect: (index: number) => void; onRemove: (index: number) => void;
+  onMove?: (from: number, to: number) => void; onClear?: () => void; onUndo?: () => void; language?: 'zh-CN' | 'en-US';
 }
-
-export const Playlist: React.FC<PlaylistProps> = ({
-  title = '播放列表',
-  subtitle,
-  songs,
-  currentIndex,
-  isCurrentPlayback = true,
-  onSelect,
-  onRemove,
-  onPlayPlaylist,
-  playLabel,
-  emptyTitle = '列表为空，请上传歌曲',
-  emptyDescription,
-  getSecondaryText,
-}) => {
-  return (
-    <div className="h-full flex flex-col p-8">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight flex items-center gap-3">
-            <Music className="text-white/60" />
-            {title}
-            <span className="text-sm font-mono opacity-40 ml-2">({songs.length})</span>
-          </h2>
-          {subtitle && <p className="text-sm text-white/40 mt-2">{subtitle}</p>}
-        </div>
-
-        {onPlayPlaylist && playLabel && songs.length > 0 && (
-          <button
-            type="button"
-            onClick={onPlayPlaylist}
-            className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white hover:text-black transition-all"
-          >
-            {playLabel}
-          </button>
-        )}
-      </div>
-
-      <div className="flex-1 overflow-y-auto scrollbar-hide space-y-2 pr-4">
-        {songs.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center opacity-20 text-center px-6">
-            <Music size={48} className="mb-4" />
-            <p>{emptyTitle}</p>
-            {emptyDescription && <p className="mt-2 text-sm">{emptyDescription}</p>}
-          </div>
-        ) : (
-          songs.map((song, index) => (
-            <motion.div
-              key={index}
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: Math.min(index * 0.05, 0.35) }}
-              className={cn(
-                "group flex items-center gap-4 p-4 rounded-xl transition-all cursor-pointer",
-                isCurrentPlayback && index === currentIndex 
-                  ? "bg-white/10 backdrop-blur-md" 
-                  : "hover:bg-white/5"
-              )}
-              onClick={() => onSelect(index)}
-            >
-              <div className="relative w-12 h-12 rounded-lg overflow-hidden bg-white/5 shrink-0">
-                {song.cover ? (
-                  <img src={song.cover} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <Music size={16} className="opacity-20" />
-                  </div>
-                )}
-                {isCurrentPlayback && index === currentIndex && (
-                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                    <div className="flex gap-1 items-end h-3">
-                      <motion.div 
-                        animate={{ height: [4, 12, 6, 10, 4] }}
-                        transition={{ repeat: Infinity, duration: 0.6 }}
-                        className="w-0.5 bg-white"
-                      />
-                      <motion.div 
-                        animate={{ height: [8, 4, 12, 6, 8] }}
-                        transition={{ repeat: Infinity, duration: 0.8 }}
-                        className="w-0.5 bg-white"
-                      />
-                      <motion.div 
-                        animate={{ height: [6, 10, 4, 12, 6] }}
-                        transition={{ repeat: Infinity, duration: 0.7 }}
-                        className="w-0.5 bg-white"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex-1 min-w-0">
-                <h3 className={cn(
-                  "font-medium truncate",
-                  isCurrentPlayback && index === currentIndex ? "text-white" : "text-white/70"
-                )}>
-                  {song.title}
-                </h3>
-                <p className="text-xs text-white/40 truncate">{getSecondaryText ? getSecondaryText(song) : song.artist}</p>
-              </div>
-
-              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove(index);
-                  }}
-                  className="p-2 hover:bg-white/10 rounded-full text-white/40 hover:text-red-400 transition-colors"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </motion.div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-};
+export function Playlist({ title, subtitle, songs, currentIndex, isCurrentPlayback = true, isPlaying, onSelect, onRemove, onMove, onClear, onUndo, language = 'zh-CN' }: PlaylistProps) {
+  const [dragged, setDragged] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+  const t = (cn: string, en: string) => language === 'zh-CN' ? cn : en;
+  return <div className="rf-queue"><div className="rf-queue-heading">
+    <div><h2 className="text-xl font-semibold text-white">{title || t('播放队列', 'Play queue')} <span className="text-sm font-normal text-white/55">{songs.length}</span></h2><p className="mt-1 text-xs text-white/60">{subtitle || t('拖动排序，点击歌曲播放', 'Drag to reorder · Click to play')}</p></div>
+    <div className="flex gap-1">{onUndo && <button className="rf-icon-button" onClick={onUndo} aria-label={t('撤销队列修改', 'Undo queue edit')} title={t('撤销', 'Undo')}><Undo2 size={17} /></button>}{onClear && <button className="rf-icon-button" disabled={!songs.length} onClick={onClear} aria-label={t('清空队列', 'Clear queue')} title={t('清空队列', 'Clear queue')}><Trash2 size={17} /></button>}</div>
+  </div><div className="rf-queue-list rf-scroll" role="list" aria-label={t('队列歌曲', 'Queued tracks')}>
+    {!songs.length && <div className="flex h-full min-h-40 flex-col items-center justify-center gap-3 text-white/65"><Music size={32} /><p>{t('队列为空', 'Your queue is empty')}</p><p className="text-xs">{t('从曲库选择歌曲开始播放', 'Choose a track from your library')}</p></div>}
+    {songs.map((song, index) => { const active = isCurrentPlayback && index === currentIndex;
+      return <div key={`${typeof song.file === 'string' ? song.file : song.title}-${index}`} role="listitem" draggable={Boolean(onMove)}
+        onDragStart={(event) => { setDragged(index); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(index)); }}
+        onDragOver={(event) => { if (dragged !== null) { event.preventDefault(); setOver(index); } }}
+        onDrop={(event) => { event.preventDefault(); if (dragged !== null && dragged !== index) onMove?.(dragged, index); setDragged(null); setOver(null); }} onDragEnd={() => { setDragged(null); setOver(null); }}
+        className={cn('rf-queue-row', active && 'rf-queue-row-active', over === index && 'rf-drop-target')}>
+        <GripVertical size={14} className="text-white/30 shrink-0" />
+        <button className="rf-queue-cover" onClick={() => onSelect(index)} aria-label={`${t('播放', 'Play')} ${song.title}`}>
+          {song.cover ? <img src={song.cover} alt="" loading="lazy" /> : <Music size={18} />}{active && <span className="absolute inset-0 bg-black/45 flex items-center justify-center">{isPlaying ? <Pause size={17} /> : <Play size={17} />}</span>}
+        </button>
+        <button className="min-w-0 flex-1 text-left" onClick={() => onSelect(index)}><span className="block truncate text-sm font-medium">{song.title}</span><span className="block truncate text-xs text-white/60 mt-1">{song.artist}</span></button>
+        <div className="rf-queue-actions">{onMove && <><button disabled={index === 0} className="rf-icon-button" onClick={() => onMove(index, index - 1)} aria-label={t('上移', 'Move up')} title={t('上移', 'Move up')}><ArrowUp size={14} /></button><button disabled={index === songs.length - 1} className="rf-icon-button" onClick={() => onMove(index, index + 1)} aria-label={t('下移', 'Move down')} title={t('下移', 'Move down')}><ArrowDown size={14} /></button></>}<button className="rf-icon-button" onClick={() => onRemove(index)} aria-label={`${t('移除', 'Remove')} ${song.title}`} title={t('移除', 'Remove')}><Trash2 size={15} /></button></div>
+      </div>;
+    })}
+  </div></div>;
+}

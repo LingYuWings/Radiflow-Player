@@ -24,6 +24,8 @@ interface CurvePoint {
   y: number;
 }
 
+// Shared card shell so playback controls, sliders, and summary blocks all use the
+// same visual structure without duplicating layout chrome.
 const EQCard: React.FC<{
   title: string;
   icon: React.ReactNode;
@@ -40,8 +42,11 @@ const EQCard: React.FC<{
   </section>
 );
 
+// Convert gain in dB into a normalized 0..1 ratio for the slider fill/curve preview.
 const gainToRatio = (gain: number) => (Math.max(-12, Math.min(12, gain)) + 12) / 24;
 
+// Build a smooth SVG preview curve across band handles so users can read the EQ
+// contour at a glance.
 const buildCurvePath = (points: Array<{ x: number; y: number }>) => {
   if (points.length === 0) {
     return '';
@@ -82,6 +87,8 @@ export const EQView: React.FC<EQViewProps> = ({
     points: [],
   });
 
+  // The curve is derived from measured DOM positions so the SVG stays aligned with
+  // the actual slider tracks across responsive layout changes.
   useEffect(() => {
     const updateCurveLayout = () => {
       const graphArea = graphAreaRef.current;
@@ -155,8 +162,8 @@ export const EQView: React.FC<EQViewProps> = ({
         <p className="mt-2 text-xs font-mono uppercase tracking-widest text-white/40">{copy.subtitle}</p>
       </motion.div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">
+        <div className="min-w-0 space-y-6">
           <EQCard title={copy.playback} icon={<SlidersHorizontal size={18} />}>
             <div className="space-y-5">
               <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-4 md:flex-row md:items-start md:justify-between">
@@ -283,7 +290,7 @@ export const EQView: React.FC<EQViewProps> = ({
           </EQCard>
         </div>
 
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <EQCard title={copy.summary} icon={<Info size={18} />}>
             <div className="space-y-4 text-sm text-white/75">
               <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
