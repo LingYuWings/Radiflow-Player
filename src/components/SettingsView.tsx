@@ -1,5 +1,4 @@
 import React, { useRef } from 'react';
-import { motion } from 'motion/react';
 import { Disc3, FolderOpen, FolderPlus, Globe2, ImagePlus, Info, Library, Monitor, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AppLanguage, SettingsCopy } from '../lib/copy';
@@ -110,14 +109,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div className="h-full w-full max-w-6xl mx-auto flex flex-col p-8 md:p-12 overflow-y-auto scrollbar-hide">
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
+      <div
         className="mb-10"
       >
         <h1 className="text-5xl font-black tracking-tighter text-white uppercase">{copy.title}</h1>
         <p className="text-white/40 font-mono text-xs tracking-widest uppercase mt-2">{copy.subtitle}</p>
-      </motion.div>
+      </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
         <div className="space-y-6">
@@ -132,7 +129,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="button"
                   onClick={() => onLanguageChange('zh-CN')}
                   className={cn(
-                    'rounded-2xl px-4 py-3 text-sm font-semibold transition-all border',
+                    'rounded-2xl px-3 py-3 text-sm font-semibold whitespace-nowrap transition-all border',
                     language === 'zh-CN'
                       ? 'bg-white text-black border-white shadow-lg'
                       : 'bg-white/5 text-white/65 border-white/10 hover:bg-white/10 hover:text-white'
@@ -144,7 +141,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="button"
                   onClick={() => onLanguageChange('en-US')}
                   className={cn(
-                    'rounded-2xl px-4 py-3 text-sm font-semibold transition-all border',
+                    'rounded-2xl px-3 py-3 text-sm font-semibold whitespace-nowrap transition-all border',
                     language === 'en-US'
                       ? 'bg-white text-black border-white shadow-lg'
                       : 'bg-white/5 text-white/65 border-white/10 hover:bg-white/10 hover:text-white'
@@ -299,7 +296,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="button"
                   onClick={() => onBackgroundSourceChange('default')}
                   className={cn(
-                    'rounded-2xl px-4 py-3 text-sm font-semibold transition-all border',
+                    'rounded-2xl px-3 py-3 text-sm font-semibold whitespace-nowrap transition-all border',
                     backgroundSource === 'default'
                       ? 'bg-white text-black border-white shadow-lg'
                       : 'bg-white/5 text-white/65 border-white/10 hover:bg-white/10 hover:text-white'
@@ -312,7 +309,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   onClick={() => hasCustomBackground && onBackgroundSourceChange('custom')}
                   disabled={!hasCustomBackground}
                   className={cn(
-                    'rounded-2xl px-4 py-3 text-sm font-semibold transition-all border disabled:opacity-40 disabled:hover:bg-white/5 disabled:hover:text-white/65',
+                    'rounded-2xl px-3 py-3 text-sm font-semibold whitespace-nowrap transition-all border disabled:opacity-40 disabled:hover:bg-white/5 disabled:hover:text-white/65',
                     backgroundSource === 'custom'
                       ? 'bg-white text-black border-white shadow-lg'
                       : 'bg-white/5 text-white/65 border-white/10 hover:bg-white/10 hover:text-white'
@@ -325,7 +322,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   onClick={() => onBackgroundSourceChange('transparent')}
                   disabled={!supportsTransparentBackground}
                   className={cn(
-                    'rounded-2xl px-4 py-3 text-sm font-semibold transition-all border disabled:opacity-40 disabled:hover:bg-white/5 disabled:hover:text-white/65',
+                    'rounded-2xl px-3 py-3 text-sm font-semibold whitespace-nowrap transition-all border disabled:opacity-40 disabled:hover:bg-white/5 disabled:hover:text-white/65',
                     backgroundSource === 'transparent'
                       ? 'bg-white text-black border-white shadow-lg'
                       : 'bg-white/5 text-white/65 border-white/10 hover:bg-white/10 hover:text-white'
@@ -426,7 +423,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       type="button"
                       onClick={() => onEffectChange('blur')}
                       className={cn(
-                        'rounded-2xl px-4 py-3 text-sm font-semibold transition-all border',
+                        'rounded-2xl px-3 py-3 text-sm font-semibold whitespace-nowrap transition-all border',
                         effect === 'blur'
                           ? 'bg-white text-black border-white shadow-lg'
                           : 'bg-white/5 text-white/65 border-white/10 hover:bg-white/10 hover:text-white'
@@ -438,7 +435,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       type="button"
                       onClick={() => onEffectChange('streamer')}
                       className={cn(
-                        'rounded-2xl px-4 py-3 text-sm font-semibold transition-all border',
+                        'rounded-2xl px-3 py-3 text-sm font-semibold whitespace-nowrap transition-all border',
                         effect === 'streamer'
                           ? 'bg-white text-black border-white shadow-lg'
                           : 'bg-white/5 text-white/65 border-white/10 hover:bg-white/10 hover:text-white'

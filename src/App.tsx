@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Disc, Heart, ListMusic, Maximize2, Minimize2, Music, Pencil, Plus, Search, Settings2, SlidersHorizontal, Trash2, User } from 'lucide-react';
+import { Captions, CircleHelp, Disc, Heart, ListMusic, Maximize2, Minimize2, Music, Pencil, Plus, Search, Settings2, SlidersHorizontal, Trash2, User } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Background } from './components/Background';
 import { EQView } from './components/EQView';
@@ -7,17 +7,21 @@ import { Library, LibrarySearchNavigationRequest, LibrarySection, PlaylistCollec
 import { useLibrary } from './hooks/useLibrary';
 import { useLyrics } from './hooks/useLyrics';
 import { useNetEase } from './hooks/useNetEase';
+import { useDesktopLyricsSync } from './hooks/useDesktopLyricsSync';
 import { LyricsView } from './components/LyricsView';
-import { MiniPlayer } from './components/MiniPlayer';
+import { ConnectedMiniPlayer as MiniPlayer } from './components/PlaybackFeedback';
 import { PlayerControls, LoopMode } from './components/PlayerControls';
 import { Playlist } from './components/Playlist';
 import { SettingsView } from './components/SettingsView';
 import { normalizeVisualizerMode, VisualizerMode } from './lib/visualizer';
 import { AppLogo } from './components/AppLogo';
 import { WindowChrome } from './components/WindowChrome';
+import { OnboardingGuide, type GuidePanel, type GuideSurface } from './components/OnboardingGuide';
 import { getEQCopy, getSettingsCopy, AppLanguage } from './lib/copy';
 import { cn } from './lib/utils';
-import { createAudioPlayback, PlaybackStatus } from './lib/audioPlayback';
+import { createAudioPlayback } from './lib/audioPlayback';
+import { createPlaybackFeedback, hasPlaybackIntent } from './lib/playbackFeedback';
+import { pageMotion, PAGE_ENTER_EASE, PAGE_EXIT_EASE } from './lib/pageMotion';
 import {
   AppSection,
   createSongIdentity,
@@ -38,7 +42,7 @@ import {
 const ipc = (window as any).require ? (window as any).require('electron').ipcRenderer : null;
 
 const APP_NAME = 'RadiFlow Player';
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.0';
 const PLAYLIST_STORAGE_KEY = 'apple-music-style-player.playlists';
 const PREFERENCES_STORAGE_KEY = 'apple-music-style-player.preferences';
 const PREFERENCES_STORAGE_VERSION = 4;
@@ -46,6 +50,7 @@ const BACKGROUND_IMAGE_STORAGE_KEY = 'radiflow-player.background-image';
 const PLAYBACK_PROGRESS_STORAGE_KEY = 'radiflow-player.playback-progress';
 const PLAYBACK_SESSION_STORAGE_KEY = 'apple-music-style-player.playback-session';
 const PLAYBACK_SESSION_STORAGE_VERSION = 1;
+const GUIDE_COMPLETED_STORAGE_KEY = 'radiflow-player.guide-v1-completed';
 const DEFAULT_CUSTOM_BACKGROUND_BLUR = 72;
 const DEFAULT_TRANSPARENT_BACKGROUND_BLUR = 72;
 const MAX_CUSTOM_BACKGROUND_DIMENSION = 1920;
@@ -168,7 +173,7 @@ export default function App() {
   // Playback, view, and persistence state are centralized here because most user
   // actions cut across multiple surfaces at once.
   const [isPlaying, setIsPlaying] = useState(false);
-  const [playbackStatus, setPlaybackStatus] = useState<PlaybackStatus>('idle');
+  const [playbackFeedback] = useState(createPlaybackFeedback);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [effect, setEffect] = useState<'blur' | 'streamer'>('streamer');
@@ -190,6 +195,11 @@ export default function App() {
   const [showLyrics, setShowLyrics] = useState(true);
   const [showPlaylist, setShowPlaylist] = useState(false);
   const [showDockQueue, setShowDockQueue] = useState(false);
+  const [showGuide, setShowGuide] = useState(() => {
+    try { return window.localStorage.getItem(GUIDE_COMPLETED_STORAGE_KEY) !== '1'; }
+    catch { return true; }
+  });
+  const guideOriginRef = useRef<{ view: 'player' | 'library'; section: AppSection; showLyrics: boolean; showPlaylist: boolean; isFullScreen: boolean } | null>(null);
   const [queueUndo, setQueueUndo] = useState<{ songs: Song[]; index: number; time: number; playing: boolean; source: string | null } | null>(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [view, setView] = useState<'player' | 'library'>('library');
@@ -411,6 +421,7 @@ export default function App() {
         playlistPrefix: '播放列表',
         neteasePlaylistPrefix: '云歌单',
         songsCount: (count: number) => `${count} 首歌曲`,
+        playlistsCount: (count: number) => `${count} 个播放列表`,
         activeTarget: '当前目标',
         viewingPlaylist: '当前查看',
         playbackSource: '播放来源',
@@ -442,6 +453,11 @@ export default function App() {
         localScope: '本地',
         neteaseScope: '网易云',
         neteasePlaylistLoginRequired: '登录网易云后才能管理在线歌单。',
+        playlistEmpty: '还没有歌单，点 + 新建一个',
+        sidebarLibraryLabel: '音乐库',
+        songCountLabel: '首',
+        neteaseNoPlaylists: '这个账号还没有歌单。',
+        sidebarNavLabel: '媒体库导航',
         neteasePlaylistCreateFailed: '创建网易云歌单失败。',
         mixedPlaylistUnsupported: '本地歌曲和在线歌曲暂时不能混合添加到同一个歌单。',
         openSettings: '打开设置',
@@ -473,6 +489,7 @@ export default function App() {
       playlistPrefix: 'Playlist',
       neteasePlaylistPrefix: 'Cloud Playlist',
       songsCount: (count: number) => `${count} track${count === 1 ? '' : 's'}`,
+      playlistsCount: (count: number) => `${count} playlist${count === 1 ? '' : 's'}`,
       activeTarget: 'Target',
       viewingPlaylist: 'Viewing',
       playbackSource: 'Queue Source',
@@ -504,6 +521,11 @@ export default function App() {
       localScope: 'Local',
       neteaseScope: 'NetEase',
       neteasePlaylistLoginRequired: 'Sign in to NetEase before managing online playlists.',
+      playlistEmpty: 'No playlists yet — tap + to create one.',
+      sidebarLibraryLabel: 'Library',
+      songCountLabel: 'songs',
+      neteaseNoPlaylists: 'This account has no playlists yet.',
+      sidebarNavLabel: 'Library navigation',
       neteasePlaylistCreateFailed: 'Failed to create NetEase playlist.',
       mixedPlaylistUnsupported: 'Local tracks and online tracks cannot be added together yet.',
       openSettings: 'Open Settings',
@@ -770,13 +792,19 @@ export default function App() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    let previousIntent = false;
     const controller = createAudioPlayback(audio, (status) => {
-      setPlaybackStatus(status);
-      setIsPlaying(status === 'playing');
+      playbackFeedback.setStatus(status);
+      const intent = hasPlaybackIntent(status);
+      if (intent !== previousIntent) {
+        previousIntent = intent;
+        setIsPlaying(intent);
+      }
     });
     playbackRef.current = controller;
     return () => {
       controller.dispose();
+      playbackFeedback.cancelPending();
       playbackRef.current = null;
       if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
     };
@@ -1776,9 +1804,29 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (showGuide) return;
+      if (isOverlaySection(currentSection)) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setCurrentSection(lastLibrarySection);
+        }
+        return; // Do not seek/change volume on the obscured player from settings.
+      }
       if (event.key === 'Escape') { setShowDockQueue(false); setView('library'); return; }
       if ((event.target as HTMLElement)?.closest('input, textarea, button, select, [contenteditable="true"], [role="slider"]')) {
         return;
+      }
+
+      // '/' or Ctrl+F jumps to the visible library search field.
+      if (event.key === '/' || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f')) {
+        const searchInput = document.querySelector<HTMLInputElement>('input[data-rf-search]');
+        if (searchInput && searchInput.offsetParent !== null) {
+          event.preventDefault();
+          searchInput.focus();
+          searchInput.select();
+          return;
+        }
       }
 
       const audio = audioRef.current;
@@ -1816,7 +1864,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentIndex, playbackQueue, isShuffle, loopMode, isPlaying, volume]);
+  }, [currentIndex, playbackQueue, isShuffle, loopMode, isPlaying, volume, currentSection, lastLibrarySection, showGuide]);
 
   const showPlaylistOverview = () => {
     pendingNetEasePlaylistRequestRef.current = null;
@@ -1993,6 +2041,35 @@ export default function App() {
     setCurrentSection(section);
   };
 
+  const prepareGuideStep = useCallback((surface: GuideSurface, panel?: GuidePanel) => {
+    setCurrentSection(section => isOverlaySection(section) ? lastLibrarySection : section);
+    setShowDockQueue(false);
+    setIsFullScreen(false);
+    setView(surface === 'library' ? 'library' : 'player');
+    if (surface === 'player') {
+      setShowLyrics(panel === 'lyrics');
+      setShowPlaylist(panel === 'playlist');
+    }
+  }, [lastLibrarySection]);
+
+  const dismissGuide = () => {
+    setShowGuide(false);
+    const origin = guideOriginRef.current;
+    guideOriginRef.current = null;
+    if (origin) {
+      setView(origin.view);
+      setCurrentSection(origin.section);
+      setShowLyrics(origin.showLyrics);
+      setShowPlaylist(origin.showPlaylist);
+      setIsFullScreen(origin.isFullScreen);
+    } else {
+      setView('library');
+      setShowLyrics(true);
+      setShowPlaylist(false);
+    }
+    try { window.localStorage.setItem(GUIDE_COMPLETED_STORAGE_KEY, '1'); } catch { /* Guide still closes when storage is unavailable. */ }
+  };
+
   const handleWindowMinimize = () => {
     if (!ipc) return;
     ipc.invoke('window:minimize');
@@ -2048,19 +2125,30 @@ export default function App() {
   latestView.current = view;
   useEffect(() => { if (view === 'player') setHomeReady(false); }, [view]);
   const isHomeVisible = !isPlayerExpanded && homeReady;
+  const hasDockLyrics = hasActiveSong && !isLoadingLyrics && lyrics.length > 0;
+  const desktopLyrics = useDesktopLyricsSync({
+    ipc,
+    audioRef,
+    hasActiveSong,
+    title: song.title,
+    artist: song.artist,
+    lyrics,
+    isLoadingLyrics,
+  });
 
   const currentWindowSubtitle = currentSection === 'settings'
     ? uiText.settings
     : currentSection === 'eq'
       ? uiText.eq
     : isPlayerExpanded
-      ? (hasActiveSong ? `${uiText.nowPlaying} 路 ${song.title}` : uiText.noPlaybackTitle)
+      ? (hasActiveSong ? `${uiText.nowPlaying} · ${song.title}` : uiText.noPlaybackTitle)
       : sidebarItems.find((item) => item.id === activeLibrarySection)?.label || uiText.brandSubtitle;
 
   return (
     <div
       className="relative h-screen w-screen overflow-hidden pt-14 text-white font-sans selection:bg-white/20"
       data-custom-background={isCustomBackgroundActive ? 'true' : 'false'}
+      data-playing={isPlaying ? 'true' : 'false'}
       style={appShellStyle}
     >
       <WindowChrome
@@ -2070,13 +2158,38 @@ export default function App() {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              data-guide="guide-entry"
+              onClick={() => {
+                if (!showGuide) {
+                  guideOriginRef.current = { view, section: currentSection, showLyrics, showPlaylist, isFullScreen };
+                  setShowGuide(true);
+                }
+              }}
+              className="rf-chrome-button"
+              aria-label={language === 'zh-CN' ? '使用指引' : 'Guide'}
+              title={language === 'zh-CN' ? '使用指引' : 'Guide'}
+            >
+              <CircleHelp size={16} />
+              <span className="hidden sm:inline">{language === 'zh-CN' ? '指引' : 'Guide'}</span>
+            </button>
+            {desktopLyrics.isSupported && (
+              <button
+                type="button"
+                onClick={desktopLyrics.toggle}
+                aria-pressed={desktopLyrics.isVisible}
+                className="rf-chrome-button"
+                title={language === 'zh-CN' ? '桌面歌词' : 'Desktop lyrics'}
+              >
+                <Captions size={16} />
+                <span className="hidden sm:inline">{language === 'zh-CN' ? '桌面歌词' : 'Lyrics'}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              data-guide="guide-eq"
               onClick={() => toggleOverlaySection('eq')}
-              className={cn(
-                'h-9 rounded-xl border px-4 text-sm font-semibold flex items-center gap-2 transition-all',
-                currentSection === 'eq'
-                  ? 'bg-white text-black border-white shadow-lg'
-                  : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10 hover:text-white'
-              )}
+              aria-pressed={currentSection === 'eq'}
+              className="rf-chrome-button"
               title={uiText.openEQ}
             >
               <SlidersHorizontal size={16} />
@@ -2085,13 +2198,10 @@ export default function App() {
 
             <button
               type="button"
+              data-guide="guide-settings"
               onClick={() => toggleOverlaySection('settings')}
-              className={cn(
-                'h-9 rounded-xl border px-4 text-sm font-semibold flex items-center gap-2 transition-all',
-                currentSection === 'settings'
-                  ? 'bg-white text-black border-white shadow-lg'
-                  : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10 hover:text-white'
-              )}
+              aria-pressed={currentSection === 'settings'}
+              className="rf-chrome-button"
               title={uiText.openSettings}
             >
               <Settings2 size={16} />
@@ -2115,176 +2225,123 @@ export default function App() {
         transparentBackground={isTransparentBackgroundActive}
       />
       <audio ref={audioRef} />
-      {hasActiveSong && (playbackStatus === 'loading' || playbackStatus === 'buffering' || playbackStatus === 'error') && (
-        <div role="status" aria-live="polite" className="absolute top-16 left-1/2 -translate-x-1/2 z-110 flex items-center gap-3 rounded-2xl border border-white/15 bg-black/85 px-4 py-3 text-sm text-white shadow-xl">
-          <span>{language === 'zh-CN'
-            ? (playbackStatus === 'error' ? '播放失败，请检查文件或网络后重试' : playbackStatus === 'buffering' ? '正在缓冲…' : '正在加载音频…')
-            : (playbackStatus === 'error' ? 'Playback failed. Check the file or connection and retry.' : playbackStatus === 'buffering' ? 'Buffering…' : 'Loading audio…')}</span>
-          {playbackStatus === 'error' && <button type="button" onClick={togglePlay} className="shrink-0 rounded-lg bg-white px-3 py-1 text-black">{language === 'zh-CN' ? '重试' : 'Retry'}</button>}
-        </div>
-      )}
 
       <div
-        aria-hidden={!isHomeVisible}
-        inert={!isHomeVisible}
-        className={cn('h-full w-full p-4 pb-32 md:p-6 md:pb-36', isHomeVisible ? 'rf-home-enter' : 'pointer-events-none')}
+        aria-hidden={!isHomeVisible || !!overlaySection}
+        inert={!isHomeVisible || !!overlaySection}
+        className={cn('h-full w-full p-4 md:p-6', 'pb-38 md:pb-38', isHomeVisible ? 'rf-home-enter' : 'pointer-events-none')}
         style={{ visibility: isHomeVisible ? 'visible' : 'hidden', contentVisibility: isHomeVisible ? 'visible' : 'hidden' }}
       >
         <div className="h-full flex gap-4 min-w-0">
-          <aside className="rf-sidebar rf-glass min-h-0 w-[clamp(14rem,24vw,18rem)] rounded-4xl flex flex-col overflow-hidden shrink-0">
-            <div className="rf-sidebar-brand px-5 pt-5 pb-4 border-b border-white/10">
-              <div className="flex items-center gap-3">
-                <AppLogo className="h-12 w-12 rounded-[18px]" />
-                <div className="min-w-0">
-                  <p className="text-xs font-mono uppercase tracking-[0.24em] text-white/35">{APP_NAME}</p>
-                  <h1 className="mt-1 text-2xl font-black tracking-tight text-white">{uiText.brandTitle}</h1>
-                  <p className="mt-1 text-sm text-white/40">{uiText.brandSubtitle}</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-4 pt-4 pb-3 border-b border-white/10">
-              <div className="grid grid-cols-2 gap-2 rounded-3xl border border-white/10 bg-white/5 p-1">
-                <button
-                  type="button"
-                  onClick={() => switchLibrarySourceMode('local')}
-                  disabled={isLibrarySourceTransitioning}
-                  className={cn(
-                    'rounded-2xl px-4 py-2 text-sm font-semibold transition-all disabled:cursor-default disabled:opacity-60',
-                    librarySourceMode === 'local'
-                      ? 'bg-white text-black shadow-lg'
-                      : 'text-white/65 hover:text-white hover:bg-white/10'
-                  )}
-                >
-                  {uiText.localScope}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => switchLibrarySourceMode('netease')}
-                  disabled={isLibrarySourceTransitioning}
-                  className={cn(
-                    'rounded-2xl px-4 py-2 text-sm font-semibold transition-all disabled:cursor-default disabled:opacity-60',
-                    librarySourceMode === 'netease'
-                      ? 'bg-white text-black shadow-lg'
-                      : 'text-white/65 hover:text-white hover:bg-white/10'
-                  )}
-                >
-                  {uiText.neteaseScope}
-                </button>
+          <aside className="rf-sidebar rf-glass min-h-0 w-[clamp(14rem,22vw,17rem)] rounded-4xl flex flex-col overflow-hidden shrink-0">
+            <div className="px-3 pt-3 pb-1">
+              <div data-guide="guide-source" role="group" aria-label={language === 'zh-CN' ? '音乐来源' : 'Music source'} className="rf-segmented rf-segmented-block">
+                {(['local', 'netease'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => switchLibrarySourceMode(mode)}
+                    disabled={isLibrarySourceTransitioning}
+                    aria-pressed={librarySourceMode === mode}
+                    className="rf-segmented-item disabled:cursor-default"
+                  >
+                    {mode === 'local' ? <Music size={15} /> : <Disc size={15} />}
+                    <span>{mode === 'local' ? uiText.localScope : uiText.neteaseScope}</span>
+                  </button>
+                ))}
               </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-hidden">
               <motion.div
-                animate={isLibrarySourceTransitioning ? { opacity: 0, filter: 'blur(18px)' } : { opacity: 1, filter: 'none' }}
-                transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                animate={isLibrarySourceTransitioning ? { opacity: 0, x: reducedPageMotion ? 0 : -6 } : { opacity: 1, x: 0 }}
+                transition={{ type: 'tween', duration: reducedPageMotion ? 0 : isLibrarySourceTransitioning ? 0.16 : 0.32, ease: isLibrarySourceTransitioning ? PAGE_EXIT_EASE : PAGE_ENTER_EASE }}
                 className={cn('min-h-0 h-full flex flex-col', isLibrarySourceTransitioning && 'pointer-events-none')}
-                style={{ willChange: isLibrarySourceTransitioning ? 'opacity, filter' : 'auto' }}
+                style={{ willChange: 'auto' }}
               >
-                <div className="p-4 border-b border-white/10 space-y-2">
-                  {sidebarItems.map((item) => {
-                    const isActive = activeLibrarySection === item.id && !overlaySection;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => openLibrarySection(item.id)}
-                        className={cn(
-                          'w-full flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-semibold transition-all',
-                          isActive
-                            ? 'bg-white text-black shadow-lg'
-                            : 'bg-white/5 text-white/65 hover:bg-white/10 hover:text-white'
-                        )}
-                      >
-                        {item.icon}
-                        <span>{item.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <nav data-guide="guide-navigation" aria-label={uiText.sidebarNavLabel} className="px-3 pt-3 pb-2">
+                  <p className="rf-side-label">{librarySourceMode === 'netease' ? uiText.neteaseScope : uiText.sidebarLibraryLabel}</p>
+                  <div className="space-y-0.5">
+                    {sidebarItems.map((item) => {
+                      const isActive = activeLibrarySection === item.id && !overlaySection;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => openLibrarySection(item.id)}
+                          aria-current={isActive ? 'page' : undefined}
+                          className={cn('rf-side-item', isActive && 'rf-side-item-active')}
+                        >
+                          {item.icon}
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </nav>
 
-                <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-                  <div className="px-4 pt-4 pb-3 flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-mono uppercase tracking-[0.18em] text-white/35">{uiText.playlists}</p>
-                      <p className="text-xs text-white/30 mt-1 truncate">
+                <div data-guide="guide-playlists" className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                  <div className="mx-3 border-t border-white/8" />
+                  <div className="flex items-center justify-between gap-2 pl-6 pr-4 pt-3 pb-1.5">
+                    <div className="min-w-0">
+                      <p className="rf-side-label p-0">{uiText.playlists}</p>
+                      <p className="truncate text-[11px] text-white/45">
                         {librarySourceMode === 'netease'
-                          ? neteaseStatusDetail
-                          : (isShowingPlaylistOverview ? uiText.playlistOverview : displayedPlaylist?.name || uiText.playlistOverview)}
+                          ? (neteaseSession.isLoggedIn ? neteaseStatusDetail : neteaseStatusMessage || neteaseStatusText)
+                          : uiText.playlistsCount(savedPlaylists.length)}
                       </p>
                     </div>
                     <button
                       type="button"
+                      data-guide="guide-create-playlist"
                       onClick={handleCreatePlaylist}
                       disabled={librarySourceMode === 'netease' && !neteaseSession.isLoggedIn}
-                      className="w-9 h-9 rounded-full border border-white/10 bg-white/5 text-white/65 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center disabled:opacity-35 disabled:hover:bg-white/5 disabled:hover:text-white/65"
+                      className="rf-icon-button"
                       aria-label={uiText.createPlaylist}
+                      title={uiText.createPlaylist}
                     >
-                      <Plus className="w-4 h-4" />
+                      <Plus size={17} />
                     </button>
                   </div>
 
-                  <div className="min-h-0 flex-1 px-4 pb-4 overflow-y-auto space-y-2 pr-2 thin-scrollbar">
+                  <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden rf-scroll px-3 pb-3 space-y-0.5">
                     {visibleLibraryPlaylists.length === 0 ? (
-                      <div className="home-glass-card rounded-3xl border border-dashed px-4 py-5 text-sm text-white/45 customizable-backdrop-medium">
-                        {librarySourceMode === 'netease'
-                          ? (neteaseSession.isLoggedIn ? uiText.neteaseNoPlaylists : uiText.neteasePlaylistLoginRequired)
-                          : uiText.playlistEmpty}
+                      <div className="rf-side-empty">
+                        <ListMusic size={18} className="shrink-0 text-white/40" />
+                        <span>
+                          {librarySourceMode === 'netease'
+                            ? (neteaseSession.isLoggedIn ? uiText.neteaseNoPlaylists : uiText.neteasePlaylistLoginRequired)
+                            : uiText.playlistEmpty}
+                        </span>
                       </div>
                     ) : (
                       visibleLibraryPlaylists.map((playlist) => {
-                        const isActive = displayedPlaylist?.id === playlist.id && !isShowingPlaylistOverview;
+                        const isActive = displayedPlaylist?.id === playlist.id && !isShowingPlaylistOverview && activeLibrarySection === 'playlists';
                         const isNetEasePlaylist = playlist.source === 'netease';
-                        const previewImage = isNetEasePlaylist ? (playlist.cover || playlist.songs[0]?.cover) : null;
+                        const previewImage = playlist.cover || playlist.songs[0]?.cover;
                         const songCount = isNetEasePlaylist ? (playlist.trackCount ?? playlist.songs.length) : playlist.songs.length;
+                        const isPlayingFrom = currentPlaybackPlaylistId === playlist.id && hasActiveSong;
 
                         return (
-                          <div
+                          <button
                             key={playlist.id}
-                            className={cn(
-                              'group rounded-3xl border transition-all overflow-hidden',
-                              isActive
-                                ? 'border-white/40 bg-white text-black shadow-2xl'
-                                : 'home-glass-card home-glass-card-interactive customizable-backdrop-medium text-white/85 hover:text-white'
-                            )}
+                            type="button"
+                            onClick={() => { void openPlaylistDetails(playlist.id); }}
+                            aria-current={isActive ? 'page' : undefined}
+                            className={cn('rf-side-playlist', isActive && 'rf-side-item-active')}
+                            title={playlist.name}
                           >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void openPlaylistDetails(playlist.id);
-                              }}
-                              className="w-full px-4 py-4 text-left"
-                            >
-                              <div className={cn('min-w-0', isNetEasePlaylist && 'flex items-center gap-3')}>
-                                {isNetEasePlaylist ? (
-                                  <div className="w-11 h-11 rounded-2xl overflow-hidden bg-black/10 shrink-0">
-                                    {previewImage ? (
-                                      <img src={previewImage} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                                    ) : (
-                                      <div className="w-full h-full flex items-center justify-center text-white/15">
-                                        <Music size={16} />
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : null}
-
-                                <div className="min-w-0 flex-1">
-                                  <p className={cn(
-                                    'truncate text-sm font-semibold',
-                                    isActive ? 'text-black' : 'text-white/80'
-                                  )}>
-                                    {playlist.name}
-                                  </p>
-                                  <p className={cn(
-                                    'mt-1 text-xs truncate',
-                                    isActive ? 'text-black/55' : 'text-white/35'
-                                  )}>
-                                    {songCount} {uiText.songCountLabel}
-                                  </p>
-                                </div>
-                              </div>
-                            </button>
-                          </div>
+                            <span className="rf-side-thumb">
+                              {previewImage
+                                ? <img src={previewImage} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" />
+                                : <ListMusic size={16} />}
+                            </span>
+                            <span className="min-w-0 flex-1 text-left">
+                              <span className="block truncate text-[13px] font-medium">{playlist.name}</span>
+                              <span className="block truncate text-[11px] text-white/45">{songCount} {uiText.songCountLabel}</span>
+                            </span>
+                            {isPlayingFrom && <span className="rf-now-bars shrink-0" aria-hidden="true"><i /><i /><i /></span>}
+                          </button>
                         );
                       })
                     )}
@@ -2294,12 +2351,12 @@ export default function App() {
             </div>
           </aside>
 
-          <section className="rf-library-panel rf-glass min-h-0 min-w-0 flex-1 rounded-4xl overflow-hidden relative">
+          <section data-guide="guide-library" className="rf-library-panel rf-glass min-h-0 min-w-0 flex-1 rounded-4xl overflow-hidden relative">
             <motion.div
-              animate={isLibrarySourceTransitioning ? { opacity: 0, filter: 'blur(18px)' } : { opacity: 1, filter: 'none' }}
-              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              animate={isLibrarySourceTransitioning ? { opacity: 0, x: reducedPageMotion ? 0 : -6 } : { opacity: 1, x: 0 }}
+              transition={{ type: 'tween', duration: reducedPageMotion ? 0 : isLibrarySourceTransitioning ? 0.16 : 0.32, ease: isLibrarySourceTransitioning ? PAGE_EXIT_EASE : PAGE_ENTER_EASE }}
               className={cn('h-full', isLibrarySourceTransitioning && 'pointer-events-none')}
-              style={{ willChange: isLibrarySourceTransitioning ? 'opacity, filter' : 'auto' }}
+              style={{ willChange: 'auto' }}
             >
               <Library
                 currentSong={hasActiveSong ? song : null}
@@ -2309,6 +2366,7 @@ export default function App() {
                 isLoading={isLoadingLibrary}
                 isPlaylistDetailLoading={loadingPlaylistId !== null && loadingPlaylistId === openedPlaylistId}
                 language={language}
+                sourceMode={librarySourceMode}
                 section={activeLibrarySection}
                 displayedPlaylist={displayedPlaylist}
                 currentPlaybackPlaylistId={currentPlaybackPlaylistId}
@@ -2336,8 +2394,9 @@ export default function App() {
           {isHomeVisible && (
               <MiniPlayer
                 audioRef={audioRef}
-              currentTime={currentTime} duration={duration} onSeek={handleSeek} status={playbackStatus} language={language}
+              currentTime={currentTime} duration={duration} onSeek={handleSeek} statusStore={playbackFeedback} language={language}
               showQueue={showDockQueue} onToggleQueue={() => setShowDockQueue((value) => !value)} queueCount={playbackQueue.length}
+              queuePanel={queuePanel}
               hasActiveSong={hasActiveSong}
               isPlaying={isPlaying}
               onTogglePlay={togglePlay}
@@ -2350,27 +2409,26 @@ export default function App() {
               volume={volume}
               onVolumeChange={setVolume}
               emptyActionLabel={uiText.openPlayerHint}
+              lyrics={hasDockLyrics ? lyrics : undefined}
             />
           )}
         </AnimatePresence>
       </div>
 
-      {isHomeVisible && showDockQueue && <div className="rf-queue-popover rf-glass"><button className="absolute top-1 right-2 text-xs text-white/55 px-2" aria-label={language === 'zh-CN' ? '关闭队列' : 'Close queue'} onClick={() => setShowDockQueue(false)}>×</button>{queuePanel}</div>}
       <AnimatePresence mode="wait" onExitComplete={() => { if (latestView.current === 'library') setHomeReady(true); }}>
         {isPlayerExpanded && (
           <motion.div
             key="player-overlay"
-            initial={{ opacity: 0, y: reducedPageMotion ? 0 : 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: reducedPageMotion ? 0 : 6, transition: { duration: reducedPageMotion ? 0 : 0.14 } }}
-            transition={{ duration: reducedPageMotion ? 0 : 0.24, ease: [0.22, 1, 0.36, 1] }}
+            inert={!!overlaySection}
+            aria-hidden={!!overlaySection}
+            {...pageMotion(reducedPageMotion)}
             className="absolute inset-x-0 top-14 bottom-0 z-90"
           >
             <motion.main
               key="player"
               initial={false}
               className={cn(
-                'relative h-full w-full flex flex-col md:flex-row items-center justify-center gap-12 p-8 md:p-24 transition-all duration-700',
+                'rf-player-layout relative h-full w-full flex flex-col md:flex-row items-center justify-center gap-12 p-8 md:p-24',
                 (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'justify-center' : ''
               )}
             >
@@ -2386,6 +2444,7 @@ export default function App() {
               <div className="absolute top-6 right-6 z-50">
                 <div className="flex gap-4">
                   <button
+                    data-guide="guide-player-fullscreen"
                     onClick={() => setIsFullScreen((value) => !value)}
                     className="p-3 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md transition-all"
                   >
@@ -2397,21 +2456,20 @@ export default function App() {
               <AnimatePresence mode="wait" initial={false}>
                 {!isFullScreen && (
                   <motion.div
-                    initial={{ opacity: 0, x: -50 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -50 }}
+                    {...pageMotion(reducedPageMotion, 'x', -18)}
                     className={cn(
-                      'relative z-10 flex flex-col items-center gap-12 transition-all duration-700',
-                      (!hasActiveSong || (!showLyrics && !showPlaylist)) ? 'w-full' : 'w-full md:w-1/2'
+                      'rf-player-primary relative z-10 flex w-full flex-col items-center gap-12',
+                      (!hasActiveSong || (!showLyrics && !showPlaylist)) && 'rf-player-primary-centered'
                     )}
                   >
                     <motion.button
                       type="button"
+                      data-guide="guide-player-artwork"
                       onClick={handleOpenCurrentAlbum}
                       disabled={!hasActiveSong || !song.album?.trim()}
                       animate={{ scale: hasActiveSong && isPlaying ? 1 : 0.9 }}
                       transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                      className="group relative h-64 w-64 overflow-hidden rounded-2xl bg-white/5 shadow-[0_40px_100px_rgba(0,0,0,0.5)] md:h-96 md:w-96 disabled:cursor-default"
+                      className="rf-player-artwork group relative h-64 w-64 shrink-0 overflow-hidden rounded-2xl bg-white/5 md:h-96 md:w-96 disabled:cursor-default"
                     >
                       {song.cover ? (
                         <img
@@ -2435,6 +2493,8 @@ export default function App() {
                     </motion.button>
 
                     <PlayerControls
+                      statusStore={playbackFeedback}
+                      visualizerActive={isPlayerExpanded && !overlaySection}
                       visualizerMode={visualizerMode}
                       audioRef={audioRef}
                       language={language}
@@ -2475,20 +2535,26 @@ export default function App() {
                 )}
               </AnimatePresence>
 
-              <AnimatePresence mode="wait" initial={false}>
-                {hasActiveSong && (showLyrics || showPlaylist) && (
+              <div data-guide="guide-player-secondary" className={cn('rf-player-secondary relative z-10 h-full min-h-0 min-w-0 w-full', isFullScreen && 'rf-player-secondary-full')}
+                inert={!hasActiveSong || (!showLyrics && !showPlaylist)}
+                aria-hidden={!hasActiveSong || (!showLyrics && !showPlaylist)}>
+              <AnimatePresence mode="sync" initial={false}>
+                {(hasActiveSong || showGuide) && (showLyrics || showPlaylist) && (
                   <motion.div
                     key={showLyrics ? 'lyrics' : 'playlist'}
-                    initial={{ opacity: 0, x: 50 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 50 }}
-                    transition={{ duration: 0.3 }}
+                    {...pageMotion(reducedPageMotion, 'x', 18)}
                     className={cn(
-                      'relative z-10 h-full flex flex-col justify-center transition-all duration-700',
-                      isFullScreen ? 'w-full max-w-4xl' : 'w-full md:w-1/2'
+                      'absolute inset-0 h-full w-full flex flex-col justify-center'
                     )}
+                    style={{ willChange: 'auto' }}
                   >
-                    {showLyrics ? (
+                    {!hasActiveSong ? (
+                      <div className="rf-glass flex h-full items-center justify-center rounded-3xl px-8 text-center text-sm text-white/60">
+                        {language === 'zh-CN'
+                          ? `选择歌曲后，这里会显示${showLyrics ? '同步歌词' : '播放队列'}`
+                          : `Select a track to see ${showLyrics ? 'synchronized lyrics' : 'the play queue'} here.`}
+                      </div>
+                    ) : showLyrics ? (
                       isLoadingLyrics ? (
                         <div className="flex flex-col items-center gap-4 opacity-50">
                           <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
@@ -2507,6 +2573,7 @@ export default function App() {
                   </motion.div>
                 )}
               </AnimatePresence>
+              </div>
             </motion.main>
           </motion.div>
         )}
@@ -2516,9 +2583,7 @@ export default function App() {
         {overlaySection && (
           <motion.div
             key={overlaySection}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
+            {...pageMotion(reducedPageMotion, 'y', 16)}
             className="absolute inset-x-0 top-14 bottom-0 z-105 p-4 md:p-6"
           >
             <div className="h-full rounded-4xl border border-white/10 bg-black/45 backdrop-blur-3xl customizable-backdrop-strong shadow-2xl overflow-hidden">
@@ -2800,6 +2865,7 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      {showGuide && <OnboardingGuide language={language} onDismiss={dismissGuide} onPrepareStep={prepareGuideStep} visualizerEnabled={visualizerMode !== 'off'} />}
     </div>
   );
 }

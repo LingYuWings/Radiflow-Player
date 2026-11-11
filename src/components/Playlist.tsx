@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { Music, Play, Pause, Trash2, GripVertical, ArrowUp, ArrowDown, Undo2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { Song } from '../types/player';
@@ -10,14 +10,26 @@ interface PlaylistProps {
 export function Playlist({ title, subtitle, songs, currentIndex, isCurrentPlayback = true, isPlaying, onSelect, onRemove, onMove, onClear, onUndo, language = 'zh-CN' }: PlaylistProps) {
   const [dragged, setDragged] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const activeRowRef = useRef<HTMLDivElement>(null);
+  const currentSong = songs[currentIndex];
+  // Locate once on opening and on track changes, never on playback ticks or
+  // pause/buffering updates. Scroll only this list, not its page ancestors.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const row = activeRowRef.current;
+    if (!isCurrentPlayback || !list || !row) return;
+    const rowTop = list.scrollTop + row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    list.scrollTop = Math.max(0, rowTop - (list.clientHeight - row.offsetHeight) / 2);
+  }, [currentIndex, isCurrentPlayback, currentSong?.file, currentSong?.title]);
   const t = (cn: string, en: string) => language === 'zh-CN' ? cn : en;
   return <div className="rf-queue"><div className="rf-queue-heading">
     <div><h2 className="text-xl font-semibold text-white">{title || t('播放队列', 'Play queue')} <span className="text-sm font-normal text-white/55">{songs.length}</span></h2><p className="mt-1 text-xs text-white/60">{subtitle || t('拖动排序，点击歌曲播放', 'Drag to reorder · Click to play')}</p></div>
     <div className="flex gap-1">{onUndo && <button className="rf-icon-button" onClick={onUndo} aria-label={t('撤销队列修改', 'Undo queue edit')} title={t('撤销', 'Undo')}><Undo2 size={17} /></button>}{onClear && <button className="rf-icon-button" disabled={!songs.length} onClick={onClear} aria-label={t('清空队列', 'Clear queue')} title={t('清空队列', 'Clear queue')}><Trash2 size={17} /></button>}</div>
-  </div><div className="rf-queue-list rf-scroll" role="list" aria-label={t('队列歌曲', 'Queued tracks')}>
+  </div><div ref={listRef} className="rf-queue-list rf-scroll" role="list" aria-label={t('队列歌曲', 'Queued tracks')}>
     {!songs.length && <div className="flex h-full min-h-40 flex-col items-center justify-center gap-3 text-white/65"><Music size={32} /><p>{t('队列为空', 'Your queue is empty')}</p><p className="text-xs">{t('从曲库选择歌曲开始播放', 'Choose a track from your library')}</p></div>}
     {songs.map((song, index) => { const active = isCurrentPlayback && index === currentIndex;
-      return <div key={`${typeof song.file === 'string' ? song.file : song.title}-${index}`} role="listitem" draggable={Boolean(onMove)}
+      return <div ref={active ? activeRowRef : undefined} aria-current={active ? 'true' : undefined} key={`${typeof song.file === 'string' ? song.file : song.title}-${index}`} role="listitem" draggable={Boolean(onMove)}
         onDragStart={(event) => { setDragged(index); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(index)); }}
         onDragOver={(event) => { if (dragged !== null) { event.preventDefault(); setOver(index); } }}
         onDrop={(event) => { event.preventDefault(); if (dragged !== null && dragged !== index) onMove?.(dragged, index); setDragged(null); setOver(null); }} onDragEnd={() => { setDragged(null); setOver(null); }}

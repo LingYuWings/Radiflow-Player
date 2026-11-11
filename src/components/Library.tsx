@@ -1,5 +1,6 @@
 import React, { createContext, useContext, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, LayoutGroup, motion } from 'motion/react';
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'motion/react';
+import { animatePageArrival, PAGE_ENTER_EASE, PAGE_TRANSITION } from '../lib/pageMotion';
 import { ChevronLeft, CirclePlay, Disc, Heart, LayoutGrid, List, ListPlus, Music, Play, Plus, Search, Trash2, User, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AppLanguage } from '../lib/copy';
@@ -42,6 +43,7 @@ interface LibraryProps {
   playlists: PlaylistCollection[];
   isLoading: boolean;
   language: AppLanguage;
+  sourceMode: 'local' | 'netease';
   section: LibrarySection;
   displayedPlaylist: PlaylistCollection | null;
   isPlaylistDetailLoading: boolean;
@@ -219,21 +221,21 @@ const gridItemRenderStyle: React.CSSProperties = {
 
 const listItemRenderStyle: React.CSSProperties = {
   contentVisibility: 'auto',
-  containIntrinsicSize: 'auto 80px',
-  height: 80,
+  containIntrinsicSize: 'auto 64px',
+  height: 64,
 };
 
 const SONG_GRID_CLASS_NAME = 'grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4 xl:gap-5';
-const SONG_LIST_ROW_HEIGHT = 88;
+const SONG_LIST_ROW_HEIGHT = 68;
 const SONG_GRID_CARD_EXTRA_HEIGHT = 84;
 const VIRTUALIZATION_OVERSCAN_ROWS = 4;
 const LIST_VIRTUALIZATION_THRESHOLD = 80;
 const GRID_VIRTUALIZATION_THRESHOLD = 120;
-const OVERLAY_EASE = [0.22, 1, 0.36, 1] as const;
-const OVERLAY_PANEL_TRANSITION = { duration: 0.36, ease: OVERLAY_EASE };
-const OVERLAY_CONTENT_TRANSITION = { duration: 0.28, ease: OVERLAY_EASE };
-const OVERLAY_RETURN_DELAY = 0.18;
-const SHARED_ARTWORK_TRANSITION = { layout: { duration: 0.34, ease: OVERLAY_EASE } };
+const OVERLAY_EASE = PAGE_ENTER_EASE;
+const OVERLAY_PANEL_TRANSITION = PAGE_TRANSITION;
+const OVERLAY_CONTENT_TRANSITION = { ...PAGE_TRANSITION, duration: 0.26 };
+const OVERLAY_RETURN_DELAY = 0.06;
+const SHARED_ARTWORK_TRANSITION = { layout: PAGE_TRANSITION };
 const ONLINE_SEARCH_HISTORY_STORAGE_KEY = 'radiflow-player.netease-search-history';
 
 const normalizeLookupText = (value?: string | null) => value?.trim().toLowerCase() || '';
@@ -347,6 +349,7 @@ const collectionCopy = {
     explore: '管理你的音乐与播放列表',
     currentTarget: '当前添加目标',
     playPlaylist: '播放此列表',
+    playAll: '播放全部',
     openPlaylist: '打开播放列表',
     addToPlaylist: '添加到播放列表',
     addAllSongs: '添加全部歌曲',
@@ -415,6 +418,7 @@ const collectionCopy = {
     explore: 'Manage your music and playlists',
     currentTarget: 'Current add target',
     playPlaylist: 'Play Playlist',
+    playAll: 'Play all',
     openPlaylist: 'Open Playlist',
     addToPlaylist: 'Add to Playlist',
     addAllSongs: 'Add All Songs',
@@ -527,12 +531,12 @@ const SongCardComponent: React.FC<{
   <motion.div
     initial={animated ? { opacity: 0, y: 20 } : false}
     animate={{ opacity: 1, y: 0 }}
-    transition={animated ? { delay: Math.min(index * 0.02, 0.35) } : undefined}
+    transition={animated ? { ...PAGE_TRANSITION, delay: Math.min(index * 0.015, 0.12) } : undefined}
     className="group relative flex flex-col gap-2.5"
     style={gridItemRenderStyle}
   >
     <button type="button" className="text-left" onClick={onPlay}>
-      <div className="aspect-square rounded-[1.35rem] overflow-hidden bg-white/5 relative shadow-xl group-hover:shadow-2xl transition-all duration-500 border border-white/5">
+      <div className="rf-card-art aspect-square rounded-[1.1rem] overflow-hidden bg-white/5 relative border border-white/6">
         {song.cover ? (
           <img src={song.cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" loading="lazy" decoding="async" referrerPolicy="no-referrer" />
         ) : (
@@ -550,7 +554,7 @@ const SongCardComponent: React.FC<{
 
     <div className="flex items-start justify-between gap-2 px-0.5 min-w-0">
       <div className="min-w-0">
-        <h3 className="text-[13px] leading-tight font-bold text-white truncate">{song.title}</h3>
+        <h3 className="text-[13px] leading-tight font-semibold text-white truncate">{song.title}</h3>
         {onNavigateToArtist ? (
           <button
             type="button"
@@ -625,7 +629,7 @@ const CollectionCardComponent: React.FC<{
   <motion.div
     initial={{ opacity: 0, y: 20 }}
     animate={{ opacity: 1, y: 0 }}
-    transition={{ delay: Math.min(index * 0.02, 0.35) }}
+    transition={{ ...PAGE_TRANSITION, delay: Math.min(index * 0.015, 0.12) }}
     className="group relative flex flex-col gap-2.5 text-left"
     style={gridItemRenderStyle}
   >
@@ -633,7 +637,7 @@ const CollectionCardComponent: React.FC<{
       <motion.div
         layoutId={artworkLayoutId}
         transition={artworkLayoutId ? SHARED_ARTWORK_TRANSITION : undefined}
-        className="aspect-square rounded-[1.35rem] overflow-hidden bg-white/5 relative shadow-xl group-hover:shadow-2xl transition-all duration-500 border border-white/5"
+        className="rf-card-art aspect-square rounded-[1.1rem] overflow-hidden bg-white/5 relative border border-white/6"
       >
         {cover ? (
           <img src={cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" loading="lazy" decoding="async" referrerPolicy="no-referrer" />
@@ -644,9 +648,9 @@ const CollectionCardComponent: React.FC<{
         )}
         <div className="absolute inset-0 bg-linear-to-t from-black/70 via-transparent to-transparent opacity-60" />
       </motion.div>
-      <div className="min-w-0 px-0.5">
-        <h3 className="text-[13px] leading-tight font-bold text-white truncate">{title}</h3>
-        <p className="mt-0.5 text-[11px] text-white/45 truncate">{subtitle}</p>
+      <div className="mt-2.5 min-w-0 px-0.5">
+        <h3 className="text-[13px] leading-tight font-semibold text-white truncate">{title}</h3>
+        <p className="mt-1 text-[11px] text-white/55 truncate">{subtitle}</p>
       </div>
     </button>
 
@@ -700,17 +704,14 @@ const SongListItemComponent: React.FC<{
   onNavigateToArtist,
 }) => (
   <motion.div
-    initial={animated ? { opacity: 0, x: 20 } : false}
-    animate={{ opacity: 1, x: 0 }}
-    transition={animated ? { delay: Math.min(index * 0.03, 0.4) } : undefined}
-    className={cn(
-      'rf-library-row group w-full grid items-center gap-3 rounded-2xl px-4 py-3 transition-all',
-      'grid-cols-[3rem_minmax(0,1.8fr)_minmax(0,1.2fr)_4.25rem_auto]',
-      isActive ? 'bg-white/10 border border-white/10' : 'hover:bg-white/5 border border-transparent'
-    )}
+    initial={animated ? { opacity: 0, y: 8 } : false}
+    animate={{ opacity: 1, y: 0 }}
+    transition={animated ? { ...PAGE_TRANSITION, delay: Math.min(index * 0.012, 0.1) } : undefined}
+    className={cn('rf-library-row group', isActive && 'rf-library-row-active')}
     style={listItemRenderStyle}
     tabIndex={0}
     aria-label={song.title}
+    aria-current={isActive ? 'true' : undefined}
     onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button')) onPlay(); }}
     onKeyDown={(event) => {
       if (event.target !== event.currentTarget) return;
@@ -722,99 +723,53 @@ const SongListItemComponent: React.FC<{
       }
     }}
   >
-    <button
-      type="button"
-      onClick={onPlay}
-      className="relative h-12 w-12 overflow-hidden rounded-xl bg-white/5 shadow-lg transition-transform hover:scale-[1.02]"
-      title="Play"
-    >
+    <div className="rf-row-index" aria-hidden="true">
+      {isActive ? <span className="rf-now-bars"><i /><i /><i /></span> : index + 1}
+    </div>
+
+    <button type="button" onClick={onPlay} className="rf-row-cover" title="Play">
       {song.cover ? (
-        <img src={song.cover} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" referrerPolicy="no-referrer" />
+        <img src={song.cover} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" />
       ) : (
-        <div className="flex h-full w-full items-center justify-center text-white/20">
-          <Music size={16} />
-        </div>
+        <Music size={16} className="text-white/25" />
       )}
-      <div className="absolute inset-0 flex items-center justify-center bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-black shadow-lg">
-          <Play size={14} fill="currentColor" className="ml-0.5" />
-        </div>
-      </div>
+      <span className="rf-row-cover-play"><Play size={14} fill="currentColor" className="ml-0.5" /></span>
     </button>
 
     <div className="min-w-0">
-      <p className={cn('truncate text-sm font-semibold', isActive ? 'text-white' : 'text-white/85')}>{song.title}</p>
-    </div>
-
-    <div className="min-w-0">
+      <p className="rf-row-title">{song.title}</p>
       {onNavigateToArtist ? (
-        <button
-          type="button"
-          onClick={onNavigateToArtist}
-          className="truncate text-left text-sm text-white/55 transition-colors hover:text-white"
-          title={song.artist}
-        >
+        <button type="button" onClick={onNavigateToArtist} className="rf-row-sub hover:text-white hover:underline" title={song.artist}>
           {song.artist}
         </button>
       ) : (
-        <p className="truncate text-sm text-white/55">{song.artist}</p>
+        <p className="rf-row-sub">{song.artist}</p>
       )}
     </div>
 
-    <div className="text-right text-xs font-mono tracking-[0.16em] text-white/42">
-      {formatSongDuration(song.duration)}
-    </div>
+    <div className="rf-row-album" title={song.album}>{song.album}</div>
 
-    <div className="flex items-center justify-end gap-2">
+    <div className="rf-row-duration">{formatSongDuration(song.duration)}</div>
+
+    <div className="rf-row-actions">
       <QueueNextAction song={song} />
-      {onAdd && (
-        <button
-          type="button"
-          onClick={onAdd}
-          className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/60 transition-all hover:bg-white/10 hover:text-white"
-          title={addLabel}
-        >
-          <Plus size={16} />
-        </button>
-      )}
-
       {onToggleFavorite && (
         <button
           type="button"
           onClick={onToggleFavorite}
-          className={cn(
-            'flex h-11 w-11 items-center justify-center rounded-full border transition-all',
-            isFavorite
-              ? 'border-white/15 bg-white/10 text-rose-300 hover:text-rose-200'
-              : 'border-white/10 bg-white/5 text-white/60 hover:bg-white/10 hover:text-white'
-          )}
+          className={cn('rf-icon-button', isFavorite && 'rf-row-action-on text-rose-300 hover:text-rose-200')}
           title={isFavorite ? (unfavoriteLabel || favoriteLabel || '') : (favoriteLabel || unfavoriteLabel || '')}
         >
           <Heart size={16} fill={isFavorite ? 'currentColor' : 'none'} />
         </button>
       )}
-
-      <button
-        type="button"
-        onClick={onPlay}
-        className={cn(
-          'flex h-11 w-11 items-center justify-center rounded-full border transition-all',
-          isActive
-            ? 'border-white bg-white text-black'
-            : 'border-white/10 bg-white/5 text-white/65 hover:bg-white/10 hover:text-white'
-        )}
-        title="Play"
-      >
-        <Play size={16} fill="currentColor" className="ml-0.5" />
-      </button>
-
+      {onAdd && (
+        <button type="button" onClick={onAdd} className="rf-icon-button" title={addLabel}>
+          <Plus size={17} />
+        </button>
+      )}
       {onRemove && (
-        <button
-          type="button"
-          onClick={onRemove}
-          className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/45 transition-all hover:bg-white/10 hover:text-red-300"
-          title="Remove"
-        >
+        <button type="button" onClick={onRemove} className="rf-icon-button hover:text-red-300" title="Remove">
           <Trash2 size={15} />
         </button>
       )}
@@ -827,12 +782,28 @@ const SongListItem = memo((props: React.ComponentProps<typeof SongListItemCompon
   return <SongListItemComponent {...props} isActive={props.isActive || Boolean(currentSong && createSongIdentity(currentSong) === createSongIdentity(props.song))} />;
 });
 
+// Placeholder rows shaped like real song rows; the shimmer is a transform-only sweep.
+const ListSkeleton: React.FC<{ label: string }> = ({ label }) => (
+  <div role="status" aria-label={label} className="space-y-1 pt-1">
+    {Array.from({ length: 8 }, (_, index) => (
+      <div key={index} className="rf-skeleton-row" style={{ opacity: 1 - index * 0.1 }}>
+        <span className="rf-skeleton h-3 w-5" />
+        <span className="rf-skeleton h-11 w-11 rounded-[10px]" />
+        <span className="flex-1 space-y-2">
+          <span className="rf-skeleton block h-3 w-2/5" />
+          <span className="rf-skeleton block h-2.5 w-1/4" />
+        </span>
+      </div>
+    ))}
+  </div>
+);
+
 const EmptyState: React.FC<{ icon: React.ReactNode; title: string; subtitle?: string }> = ({ icon, title, subtitle }) => (
-  <div className="min-h-80 rounded-4xl border border-white/10 bg-black/15 backdrop-blur-2xl customizable-backdrop-medium flex flex-col items-center justify-center gap-4 text-center text-white/35 px-6">
-    <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center">{icon}</div>
+  <div className="min-h-80 rounded-3xl border border-dashed border-white/12 flex flex-col items-center justify-center gap-4 text-center text-white/45 px-6">
+    <div className="w-16 h-16 rounded-2xl bg-white/6 flex items-center justify-center outline outline-1 outline-white/10">{icon}</div>
     <div>
-      <p className="text-xl font-bold text-white/70">{title}</p>
-      {subtitle && <p className="text-sm text-white/35 mt-2">{subtitle}</p>}
+      <p className="text-lg font-semibold text-white/80">{title}</p>
+      {subtitle && <p className="text-sm text-white/50 mt-1.5">{subtitle}</p>}
     </div>
   </div>
 );
@@ -996,7 +967,7 @@ const VirtualSongList: React.FC<VirtualSongListProps> = ({
   return (
     <div ref={wrapperRef} className="pb-4">
       {shouldVirtualize && paddingTop > 0 && <div style={{ height: paddingTop }} />}
-      <div className="space-y-2">
+      <div className="space-y-1">
         {visibleSongs.map((song, offset) => {
           const index = shouldVirtualize ? startIndex + offset : offset;
 
@@ -1133,6 +1104,7 @@ export const Library: React.FC<LibraryProps> = ({
   isLoading,
   isPlaylistDetailLoading,
   language,
+  sourceMode,
   section,
   displayedPlaylist,
   currentPlaybackPlaylistId,
@@ -1179,6 +1151,11 @@ export const Library: React.FC<LibraryProps> = ({
   });
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const reducedPageMotion = useReducedMotion();
+  useEffect(() => {
+    const animation = animatePageArrival(scrollContainerRef.current, Boolean(reducedPageMotion));
+    return () => animation?.cancel();
+  }, [section, displayedPlaylist?.id, reducedPageMotion]);
   const playlistDetailScrollRef = useRef<HTMLDivElement>(null);
   const artistOverlayScrollRef = useRef<HTMLDivElement>(null);
   const albumOverlayScrollRef = useRef<HTMLDivElement>(null);
@@ -1830,6 +1807,12 @@ export const Library: React.FC<LibraryProps> = ({
     return copy.searchSongs;
   })();
 
+  const searchScope = language === 'zh-CN'
+    ? (section === 'search' ? '网易云 · 全站搜索'
+      : `${sourceMode === 'local' ? '本地' : '网易云'} · ${section === 'playlists' && displayedPlaylist ? '歌单内筛选' : '当前页面筛选'}`)
+    : (section === 'search' ? 'NetEase · Online search'
+      : `${sourceMode === 'local' ? 'Local' : 'NetEase'} · ${section === 'playlists' && displayedPlaylist ? 'Filter this playlist' : 'Filter this view'}`);
+
   const currentViewKey = useMemo(() => {
     if (section === 'playlists') {
       return displayedPlaylist ? `playlists:detail:${displayedPlaylist.id}` : 'playlists:overview';
@@ -1978,9 +1961,9 @@ export const Library: React.FC<LibraryProps> = ({
   ]);
 
   const renderTopBar = (showBack = false, onBack?: () => void, actionSlot?: React.ReactNode) => (
-    <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
+    <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 lg:gap-6">
       <div className="min-w-0">
-        <div className="flex items-center gap-3" style={{ marginBottom: `${8 - headerCollapseProgress * 4}px` }}>
+        <div className="flex items-center gap-3" style={{ marginBottom: `${6 - headerCollapseProgress * 3}px` }}>
           {showBack && onBack && (
             <button
               type="button"
@@ -1992,39 +1975,56 @@ export const Library: React.FC<LibraryProps> = ({
             </button>
           )}
           <motion.h1
-            className="text-4xl md:text-5xl font-black tracking-tighter text-white uppercase truncate"
-            style={{ scale: 1 - headerCollapseProgress * 0.18, transformOrigin: 'left top' }}
+            className="rf-page-title truncate"
+            style={{ scale: 1 - headerCollapseProgress * 0.16, transformOrigin: 'left center' }}
           >
             {pageTitle}
           </motion.h1>
         </div>
-        <motion.p
-          className="text-white/40 font-mono text-xs tracking-widest uppercase"
-          style={{
-            opacity: 1 - headerCollapseProgress * 0.35,
-            scale: 1 - headerCollapseProgress * 0.06,
-            transformOrigin: 'left top',
-          }}
-        >
-          {pageSubtitle}
-        </motion.p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <motion.p
+            className="text-[13px] text-white/55"
+            style={{
+              opacity: 1 - headerCollapseProgress * 0.35,
+              scale: 1 - headerCollapseProgress * 0.06,
+              transformOrigin: 'left top',
+            }}
+          >
+            {pageSubtitle}
+          </motion.p>
+          <span className="rf-chip">{searchScope}</span>
+        </div>
       </div>
       {actionSlot}
     </div>
   );
 
-  const renderSearchBox = () => (
-    <div className="relative group w-full">
-      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20 group-focus-within:text-white/60 transition-colors" size={18} />
+  const renderViewModeToggle = (mode: 'grid' | 'list', setMode: (mode: 'grid' | 'list') => void) => (
+    <div role="radiogroup" aria-label={language === 'zh-CN' ? '显示方式' : 'View mode'} className="rf-segmented">
+      {([['grid', LayoutGrid, language === 'zh-CN' ? '网格' : 'Grid'], ['list', List, language === 'zh-CN' ? '列表' : 'List']] as const).map(([value, Icon, label]) => (
+        <button key={value} type="button" role="radio" aria-checked={mode === value} onClick={() => setMode(value)} className="rf-segmented-item">
+          <Icon size={15} />
+          <span>{label}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  const renderSearchBox = (compact = false) => (
+    <div className={cn('relative group', compact ? 'w-full lg:w-72' : 'w-full')}>
+      <Search aria-hidden="true" className="pointer-events-none absolute left-4 top-1/2 z-10 -translate-y-1/2 text-white/45 group-focus-within:text-white/85 transition-colors" size={compact ? 16 : 18} />
       <input
         type="text"
+        data-rf-search
         placeholder={searchPlaceholder}
-        aria-label={section === 'search' ? (language === 'zh-CN' ? '搜索网易云音乐' : 'Search NetEase music') : (language === 'zh-CN' ? '筛选当前曲库' : 'Filter library')}
+        aria-label={`${searchPlaceholder} · ${searchScope}`}
         value={searchQuery}
         onChange={(event) => setSearchQuery(event.target.value)}
         className={cn(
-          'w-full bg-white/5 border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:bg-white/10 focus:border-white/20 transition-all backdrop-blur-md customizable-backdrop-soft',
-          headerCollapseProgress > 0.35 ? 'rounded-[1.1rem] py-3 pl-12 pr-12' : 'rounded-2xl py-4 pl-12 pr-14'
+          'w-full bg-white/5 border border-white/10 text-white placeholder:text-white/35 focus:outline-none focus:bg-white/10 focus:border-white/20 transition-all backdrop-blur-md customizable-backdrop-soft',
+          compact
+            ? 'rf-search-compact h-10 rounded-xl pl-11 pr-10 text-sm'
+            : headerCollapseProgress > 0.35 ? 'rounded-[1.1rem] py-3 pl-12 pr-12' : 'rounded-2xl py-4 pl-12 pr-14'
         )}
       />
 
@@ -2032,7 +2032,7 @@ export const Library: React.FC<LibraryProps> = ({
         <button
           type="button"
           onClick={() => setSearchQuery('')}
-          className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/45 transition-all hover:bg-white/10 hover:text-white"
+          className={cn('absolute top-1/2 flex -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/45 transition-all hover:bg-white/10 hover:text-white', compact ? 'right-2 h-7 w-7' : 'right-3 h-8 w-8')}
           title={copy.clearSearch}
           aria-label={copy.clearSearch}
         >
@@ -2042,68 +2042,56 @@ export const Library: React.FC<LibraryProps> = ({
     </div>
   );
 
-  const renderHeaderBlock = (showBack = false, onBack?: () => void, actionSlot?: React.ReactNode) => (
-    <div className="shrink-0 pb-4 md:pb-5">
-      <div className="flex flex-col gap-4">
-        {renderTopBar(showBack, onBack, actionSlot)}
-        {renderSearchBox()}
+  const renderHeaderBlock = (showBack = false, onBack?: () => void, actionSlot?: React.ReactNode) => {
+    // NetEase search keeps a full-width field; other pages search from the toolbar.
+    const isSearchPage = section === 'search';
+    const toolbar = (
+      <div className="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:flex-nowrap">
+        {!isSearchPage && renderSearchBox(true)}
+        {actionSlot}
       </div>
-    </div>
-  );
+    );
+    return (
+      <div className="shrink-0 pb-4 md:pb-5">
+        <div className="flex flex-col gap-4">
+          {renderTopBar(showBack, onBack, toolbar)}
+          {isSearchPage && renderSearchBox()}
+        </div>
+      </div>
+    );
+  };
 
   const renderPlaylistCategoryToggle = () => (
-    <div className="flex flex-wrap gap-3">
-      <button
-        type="button"
-        onClick={() => setPlaylistCategoryFilter('created')}
-        className={cn(
-          'rounded-2xl px-4 py-3 border text-sm font-semibold transition-all flex items-center gap-2',
-          playlistCategoryFilter === 'created'
-            ? 'bg-white text-black border-white shadow-lg'
-            : 'bg-white/5 border-white/10 text-white/75 hover:bg-white/10 hover:text-white'
-        )}
-      >
-        <User size={16} />
-        <span>{copy.createdPlaylists}</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => setPlaylistCategoryFilter('followed')}
-        className={cn(
-          'rounded-2xl px-4 py-3 border text-sm font-semibold transition-all flex items-center gap-2',
-          playlistCategoryFilter === 'followed'
-            ? 'bg-white text-black border-white shadow-lg'
-            : 'bg-white/5 border-white/10 text-white/75 hover:bg-white/10 hover:text-white'
-        )}
-      >
-        <Disc size={16} />
-        <span>{copy.followedPlaylists}</span>
-      </button>
+    <div role="radiogroup" aria-label={copy.playlists} className="rf-segmented">
+      {([['created', User, copy.createdPlaylists], ['followed', Disc, copy.followedPlaylists]] as const).map(([value, Icon, label]) => (
+        <button key={value} type="button" role="radio" aria-checked={playlistCategoryFilter === value} onClick={() => setPlaylistCategoryFilter(value)} className="rf-segmented-item">
+          <Icon size={15} />
+          <span>{label}</span>
+        </button>
+      ))}
     </div>
   );
 
   const renderPlaylistDetailBackBar = (songCount: number) => (
-    <div className="shrink-0 pb-4 md:pb-5">
-      <div className="flex items-center justify-between gap-3 px-1 py-1 md:px-0">
+    <div className="shrink-0 pb-3">
+      <div className="flex items-center justify-between gap-3">
         <button
           type="button"
           onClick={onBackToPlaylistsOverview}
-          className="h-10 shrink-0 rounded-full border border-white/10 bg-white/5 px-4 text-white/70 transition-all hover:bg-white/10 hover:text-white flex items-center gap-2"
+          className="rf-chrome-button -ml-2"
         >
           <ChevronLeft size={18} />
-          <span className="text-sm font-semibold">{copy.back}</span>
+          <span>{copy.back}</span>
         </button>
 
-        <span className="rounded-full border border-white/8 bg-white/4 px-3 py-1 text-[11px] font-semibold text-white/55">
-          {copy.songs(songCount)}
-        </span>
+        <span className="rf-chip">{copy.songs(songCount)}</span>
       </div>
     </div>
   );
 
   const renderPlaylistSongsPanel = (content: React.ReactNode, showSearchBox = true) => (
-    <div className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-[1.75rem] border border-white/8 bg-black/22 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.018)]">
-      <div ref={playlistDetailScrollRef} className="h-full overflow-y-auto px-3 py-3 scrollbar-hide md:px-4 md:py-4">
+    <div className="relative z-10 min-h-0 flex-1 overflow-hidden">
+      <div ref={playlistDetailScrollRef} className="h-full overflow-y-auto overflow-x-hidden rf-scroll px-1 py-1">
         {showSearchBox && (
           <div className="pb-4">
             {renderSearchBox()}
@@ -2114,13 +2102,29 @@ export const Library: React.FC<LibraryProps> = ({
     </div>
   );
 
+  const renderPlaylistHero = (playlist: PlaylistCollection, songCount: number, updatedLabel: string, action?: React.ReactNode) => (
+    <div className="rf-hero mb-5">
+      <PlaylistArtwork
+        cover={playlist.cover || playlist.songs[0]?.cover}
+        title={playlist.name}
+        sizeClassName="h-28 w-28 shrink-0 rounded-2xl md:h-40 md:w-40"
+        iconSize={34}
+      />
+      <div className="min-w-0 flex-1">
+        <p className="rf-hero-kicker">{copy.playlists}</p>
+        <h2 className="rf-hero-title">{playlist.name}</h2>
+        <p className="mt-2 text-[13px] text-white/60">
+          {copy.songs(songCount)}<span className="mx-2 text-white/30">·</span>{copy.lastUpdated} {updatedLabel}
+        </p>
+        {action && <div className="mt-4 flex flex-wrap items-center gap-3">{action}</div>}
+      </div>
+    </div>
+  );
+
   const renderPlaylistSection = () => {
     if (isPlaylistDetailLoading && !displayedPlaylist) {
       return (
-        <div className="min-h-80 rounded-4xl border border-white/10 bg-black/15 backdrop-blur-2xl customizable-backdrop-medium flex flex-col items-center justify-center gap-4 text-white/35">
-          <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin" />
-          <p className="font-mono text-xs tracking-widest uppercase">{copy.loadingPlaylist}</p>
-        </div>
+        <ListSkeleton label={copy.loadingPlaylist} />
       );
     }
 
@@ -2130,49 +2134,31 @@ export const Library: React.FC<LibraryProps> = ({
           {visiblePlaylists.length === 0 ? (
             <EmptyState icon={<Music size={28} />} title={copy.emptyPlaylists} subtitle={copy.playlistSubtitle} />
           ) : (
-            <div className="space-y-3 pb-4">
+            <div className="rf-cover-grid pb-4">
               {visiblePlaylists.map((playlist, index) => (
                 <motion.button
                   key={playlist.id}
                   type="button"
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: Math.min(index * 0.03, 0.35) }}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ ...PAGE_TRANSITION, delay: Math.min(index * 0.015, 0.12) }}
                   onClick={() => onOpenPlaylist(playlist.id)}
-                  className="group relative w-full overflow-hidden rounded-4xl border border-white/10 bg-black/15 px-5 py-5 text-left backdrop-blur-2xl customizable-backdrop-medium transition-all hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/6 hover:shadow-2xl"
+                  className="rf-cover-card group"
+                  title={playlist.name}
                 >
-                  <div className="absolute inset-0 bg-linear-to-r from-white/4 via-transparent to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
-                  <div className="relative flex items-center gap-5">
+                  <span className="rf-cover-card-art">
                     <PlaylistArtwork
                       cover={playlist.cover || playlist.songs[0]?.cover}
                       title={playlist.name}
-                      sizeClassName="h-20 w-20 shrink-0 md:h-24 md:w-24"
-                      iconSize={24}
+                      sizeClassName="aspect-square w-full rounded-[1.1rem]"
+                      iconSize={28}
                     />
-
-                    <div className="min-w-0 flex-1">
-                      <p className="mb-3 text-xs font-mono uppercase tracking-[0.22em] text-white/28">{copy.playlists}</p>
-                      <h2 className="text-2xl font-black tracking-tight text-white truncate">{playlist.name}</h2>
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/65">
-                          {copy.songs(playlist.trackCount ?? playlist.songs.length)}
-                        </span>
-                        <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/55">
-                          {copy.lastUpdated}: {formatPlaylistUpdatedAt(playlist.updatedAt, language)}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="shrink-0 flex items-center gap-3">
-                      <div className="hidden md:block text-right">
-                        <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-white/28">{copy.lastUpdated}</p>
-                        <p className="mt-1 text-sm text-white/50">{formatPlaylistUpdatedAt(playlist.updatedAt, language)}</p>
-                      </div>
-                      <div className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/55 transition-all duration-300 group-hover:translate-x-0.5 group-hover:bg-white/10 group-hover:text-white">
-                        <ChevronLeft size={18} className="rotate-180" />
-                      </div>
-                    </div>
-                  </div>
+                    <span className="rf-cover-card-play" aria-hidden="true"><ChevronLeft size={20} className="rotate-180" /></span>
+                  </span>
+                  <span className="mt-3 block truncate text-left text-sm font-semibold text-white">{playlist.name}</span>
+                  <span className="mt-0.5 block truncate text-left text-xs text-white/50">
+                    {copy.songs(playlist.trackCount ?? playlist.songs.length)} · {formatPlaylistUpdatedAt(playlist.updatedAt, language)}
+                  </span>
                 </motion.button>
               ))}
             </div>
@@ -2187,35 +2173,10 @@ export const Library: React.FC<LibraryProps> = ({
     if (isPlaylistDetailLoading) {
       return (
         <div className="flex h-full min-h-0 flex-col">
-          <div className="group mb-6 rounded-4xl border border-white/10 bg-black/15 p-5 md:p-6 backdrop-blur-2xl customizable-backdrop-medium transition-all">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5 md:gap-6">
-              <PlaylistArtwork
-                cover={playlistCover}
-                title={displayedPlaylist.name}
-                sizeClassName="h-32 w-32 shrink-0 md:h-36 md:w-36"
-                iconSize={34}
-              />
-
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-mono uppercase tracking-[0.22em] text-white/35 mb-3">{copy.playlists}</p>
-                <h2 className="text-3xl md:text-4xl font-black tracking-tight text-white truncate">{displayedPlaylist.name}</h2>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/65">
-                    {copy.songs(displayedPlaylist.trackCount ?? displayedPlaylist.songs.length)}
-                  </span>
-                  <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/55">
-                    {copy.lastUpdated}: {updatedLabel}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
+          {renderPlaylistHero(displayedPlaylist, displayedPlaylist.trackCount ?? displayedPlaylist.songs.length, updatedLabel)}
 
           {renderPlaylistSongsPanel((
-            <div className="min-h-80 flex flex-col items-center justify-center gap-4 text-white/35">
-              <div className="w-12 h-12 rounded-full border-4 border-white/20 border-t-white animate-spin" />
-              <p className="font-mono text-xs tracking-widest uppercase">{copy.loadingPlaylist}</p>
-            </div>
+            <ListSkeleton label={copy.loadingPlaylist} />
           ), false)}
         </div>
       );
@@ -2223,41 +2184,17 @@ export const Library: React.FC<LibraryProps> = ({
 
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <div className="group mb-6 rounded-4xl border border-white/10 bg-black/15 p-5 md:p-6 backdrop-blur-2xl customizable-backdrop-medium transition-all hover:border-white/15 hover:bg-white/4 hover:shadow-2xl">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5 md:gap-6">
-            <PlaylistArtwork
-              cover={playlistCover}
-              title={displayedPlaylist.name}
-              sizeClassName="h-32 w-32 shrink-0 md:h-36 md:w-36"
-              iconSize={34}
-            />
-
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-mono uppercase tracking-[0.22em] text-white/35 mb-3">{copy.playlists}</p>
-              <h2 className="text-3xl md:text-4xl font-black tracking-tight text-white truncate">{displayedPlaylist.name}</h2>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/65">
-                  {copy.songs(displayedPlaylist.songs.length)}
-                </span>
-                <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/55">
-                  {copy.lastUpdated}: {updatedLabel}
-                </span>
-              </div>
-            </div>
-
-            <div className="md:self-stretch flex items-center md:justify-end">
-              <button
-                type="button"
-                onClick={onPlaySelectedPlaylist}
-                disabled={displayedPlaylist.songs.length === 0}
-                className="min-w-42 rounded-3xl px-5 py-4 bg-white text-black text-sm font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.02] hover:shadow-[0_20px_55px_rgba(255,255,255,0.16)] disabled:opacity-40 disabled:hover:scale-100 disabled:hover:translate-y-0 flex items-center justify-center gap-2 shadow-xl"
-              >
-                <CirclePlay size={18} />
-                {copy.playPlaylist}
-              </button>
-            </div>
-          </div>
-        </div>
+        {renderPlaylistHero(displayedPlaylist, displayedPlaylist.songs.length, updatedLabel, (
+          <button
+            type="button"
+            onClick={onPlaySelectedPlaylist}
+            disabled={displayedPlaylist.songs.length === 0}
+            className="rf-primary-button"
+          >
+            <Play size={17} fill="currentColor" />
+            {copy.playPlaylist}
+          </button>
+        ))}
 
         {renderPlaylistSongsPanel(
           filteredPlaylistSongs.length === 0 ? (
@@ -2458,7 +2395,7 @@ export const Library: React.FC<LibraryProps> = ({
         : onlineAlbumResults.length > 0;
 
     const renderSearchModeToggle = () => (
-      <div className="rounded-3xl border border-white/10 bg-white/5 p-1 inline-grid grid-cols-3 gap-1">
+      <div role="radiogroup" aria-label={copy.searchResultsSubtitle} className="rf-segmented">
         {([
           { id: 'song', label: copy.searchBySong },
           { id: 'album', label: copy.searchByAlbum },
@@ -2467,13 +2404,10 @@ export const Library: React.FC<LibraryProps> = ({
           <button
             key={item.id}
             type="button"
+            role="radio"
+            aria-checked={searchMode === item.id}
             onClick={() => setSearchMode(item.id)}
-            className={cn(
-              'rounded-2xl px-4 py-2 text-sm font-semibold transition-all',
-              searchMode === item.id
-                ? 'bg-white text-black'
-                : 'text-white/65 hover:text-white hover:bg-white/10'
-            )}
+            className="rf-segmented-item"
           >
             {item.label}
           </button>
@@ -2559,7 +2493,7 @@ export const Library: React.FC<LibraryProps> = ({
     const renderSearchHistory = () => (
       searchHistory.length > 0 ? (
         <div className="flex flex-wrap gap-2">
-          <p className="w-full text-xs font-mono uppercase tracking-[0.2em] text-white/35">{copy.searchHistory}</p>
+          <p className="rf-section-label w-full">{copy.searchHistory}</p>
           {searchHistory.map((entry) => (
             <div key={`${entry.mode}:${entry.keyword}`} className="inline-flex max-w-full items-center rounded-full border border-white/10 bg-white/5 pr-1 text-white/80">
               <button
@@ -2590,17 +2524,17 @@ export const Library: React.FC<LibraryProps> = ({
 
     return (
       <>
-        <div className="mb-6">{renderSearchModeToggle()}</div>
+        <div className="mb-5">{renderSearchModeToggle()}</div>
 
         {!trimmedQuery ? (
           <div className="space-y-6">
             {(searchHistory.length > 0 || hotSearchKeywords.length > 0) && (
-              <div className="rounded-4xl border border-white/10 bg-black/15 p-5 md:p-6 backdrop-blur-2xl customizable-backdrop-medium">
+              <div className="px-1">
                 {renderSearchHistory()}
 
                 {hotSearchKeywords.length > 0 && (
                   <div className={cn('flex flex-wrap gap-2', searchHistory.length > 0 ? 'mt-5 pt-5 border-t border-white/8' : '')}>
-                    <p className="w-full text-xs font-mono uppercase tracking-[0.2em] text-white/35">{copy.hotSearches}</p>
+                    <p className="rf-section-label w-full">{copy.hotSearches}</p>
                     {hotSearchKeywords.map((keyword) => (
                       <button
                         key={keyword}
@@ -2609,8 +2543,9 @@ export const Library: React.FC<LibraryProps> = ({
                           setSearchMode('song');
                           setSearchQuery(keyword);
                         }}
-                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-white/80 transition-all hover:bg-white/10 hover:text-white"
+                        className="rf-pill"
                       >
+                        <span className="rf-pill-rank">{hotSearchKeywords.indexOf(keyword) + 1}</span>
                         {keyword}
                       </button>
                     ))}
@@ -2662,7 +2597,7 @@ export const Library: React.FC<LibraryProps> = ({
               />
             </div>
           )}
-          <div className="absolute inset-0 bg-black/28 backdrop-blur-xl customizable-backdrop-medium" />
+          <div className="absolute inset-0 bg-black/40" />
           <button
             type="button"
             aria-label="Close album overlay"
@@ -2692,19 +2627,13 @@ export const Library: React.FC<LibraryProps> = ({
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, scale: 0.985, y: 34 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.22, ease: OVERLAY_EASE } }}
             transition={OVERLAY_PANEL_TRANSITION}
-            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/32 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl customizable-backdrop-strong md:p-8"
+            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/35 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-8"
           >
             <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[2.1rem]">
-              {overlayBackground && (
-                <div
-                  className="absolute inset-0 scale-110 bg-cover bg-center opacity-18 blur-[76px]"
-                  style={{ backgroundImage: `url(${overlayBackground})` }}
-                />
-              )}
               <div className="absolute inset-0 bg-linear-to-br from-white/10 via-black/12 to-black/36" />
             </div>
 
@@ -2719,31 +2648,33 @@ export const Library: React.FC<LibraryProps> = ({
                 <button
                   type="button"
                   onClick={() => setDetailState(null)}
-                  className="h-11 rounded-full border border-white/10 bg-white/5 px-4 text-sm font-semibold text-white/75 transition-all hover:bg-white/10 hover:text-white flex items-center gap-2"
+                  className="rf-chrome-button -ml-2"
                 >
                   <ChevronLeft size={18} />
                   <span>{copy.back}</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => onAddSongsToPlaylist(activeAlbumGroup.songs)}
-                  className="rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/75 transition-all hover:bg-white/10 hover:text-white flex items-center gap-2"
-                >
-                  <Plus size={16} />
-                  <span>{copy.addAlbumSongs}</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => onPlaySongs(detailSongs, 0, null)} disabled={detailSongs.length === 0} className="rf-primary-button">
+                    <Play size={16} fill="currentColor" />
+                    <span>{copy.playAll}</span>
+                  </button>
+                  <button type="button" onClick={() => onAddSongsToPlaylist(activeAlbumGroup.songs)} className="rf-ghost-button">
+                    <Plus size={16} />
+                    <span>{copy.addAlbumSongs}</span>
+                  </button>
+                </div>
               </div>
 
               <div className="flex flex-col items-start gap-5 lg:flex-row lg:items-end">
                 <div className="aspect-square w-full max-w-[14rem] shrink-0 opacity-0" aria-hidden="true" />
 
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-mono uppercase tracking-[0.24em] text-white/35">{copy.albums}</p>
-                  <h2 className="mt-2 text-2xl font-black tracking-tight text-white">{activeAlbumGroup.name}</h2>
+                  <p className="rf-hero-kicker">{copy.albums}</p>
+                  <h2 className="rf-hero-title">{activeAlbumGroup.name}</h2>
                   <p className="mt-1 text-sm text-white/60">{activeAlbumGroup.artist}</p>
                   <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/65">
+                    <span className="rf-chip">
                       {copy.songs(activeAlbumGroup.songs.length)}
                     </span>
                   </div>
@@ -2756,9 +2687,9 @@ export const Library: React.FC<LibraryProps> = ({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8, transition: { duration: 0.12 } }}
               transition={{ delay: 0.12, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-[1.75rem] border border-white/8 bg-black/22 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.018)]"
+              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl"
             >
-              <div ref={albumOverlayScrollRef} className="h-full overflow-y-auto px-3 py-3 scrollbar-hide md:px-4 md:py-4">
+              <div ref={albumOverlayScrollRef} className="h-full overflow-y-auto overflow-x-hidden rf-scroll px-1 py-1">
                 {detailSongs.length === 0 ? (
                   <EmptyState icon={<Disc size={28} />} title={copy.emptySongs} />
                 ) : (
@@ -2805,7 +2736,7 @@ export const Library: React.FC<LibraryProps> = ({
               />
             </div>
           )}
-          <div className="absolute inset-0 bg-black/28 backdrop-blur-xl customizable-backdrop-medium" />
+          <div className="absolute inset-0 bg-black/40" />
           <button
             type="button"
             aria-label="Close artist overlay"
@@ -2835,19 +2766,13 @@ export const Library: React.FC<LibraryProps> = ({
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, scale: 0.985, y: 34 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.22, ease: OVERLAY_EASE } }}
             transition={OVERLAY_PANEL_TRANSITION}
-            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/32 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl customizable-backdrop-strong md:p-8"
+            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/35 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-8"
           >
             <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[2.1rem]">
-              {overlayBackground && (
-                <div
-                  className="absolute inset-0 scale-110 bg-cover bg-center opacity-18 blur-[76px]"
-                  style={{ backgroundImage: `url(${overlayBackground})` }}
-                />
-              )}
               <div className="absolute inset-0 bg-linear-to-br from-white/10 via-black/12 to-black/36" />
             </div>
 
@@ -2862,31 +2787,37 @@ export const Library: React.FC<LibraryProps> = ({
                 <button
                   type="button"
                   onClick={() => setDetailState(null)}
-                  className="h-11 rounded-full border border-white/10 bg-white/5 px-4 text-sm font-semibold text-white/75 transition-all hover:bg-white/10 hover:text-white flex items-center gap-2 shrink-0"
+                  className="rf-chrome-button -ml-2 shrink-0"
                 >
                   <ChevronLeft size={18} />
                   <span>{copy.back}</span>
                 </button>
 
+                <div className="flex items-center gap-2">
+                <button type="button" onClick={() => onPlaySongs(detailSongs, 0, null)} disabled={detailSongs.length === 0} className="rf-primary-button">
+                  <Play size={16} fill="currentColor" />
+                  <span>{copy.playAll}</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => onAddSongsToPlaylist(activeArtistGroup.songs)}
-                  className="rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/75 transition-all hover:bg-white/10 hover:text-white flex items-center gap-2"
+                  className="rf-ghost-button"
                 >
                   <Plus size={16} />
                   <span>{copy.addArtistSongs}</span>
                 </button>
+                </div>
               </div>
 
               <div className="flex flex-col items-start gap-5 lg:flex-row lg:items-end">
                 <div className="aspect-square w-full max-w-[14rem] shrink-0 opacity-0" aria-hidden="true" />
 
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-mono uppercase tracking-[0.24em] text-white/35">{copy.artists}</p>
-                  <h2 className="mt-2 truncate text-3xl font-black tracking-tight text-white md:text-5xl">{activeArtistGroup.name}</h2>
+                  <p className="rf-hero-kicker">{copy.artists}</p>
+                  <h2 className="rf-hero-title">{activeArtistGroup.name}</h2>
                   <p className="mt-2 text-sm text-white/60">{copy.artistSubtitle(activeArtistGroup.songs.length)}</p>
                   <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/65">
+                    <span className="rf-chip">
                       {copy.songs(activeArtistGroup.songs.length)}
                     </span>
                   </div>
@@ -2899,9 +2830,9 @@ export const Library: React.FC<LibraryProps> = ({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8, transition: { duration: 0.12 } }}
               transition={{ delay: 0.12, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-[1.75rem] border border-white/8 bg-black/22 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.018)]"
+              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl"
             >
-              <div ref={artistOverlayScrollRef} className="h-full overflow-y-auto px-3 py-3 scrollbar-hide md:px-4 md:py-4">
+              <div ref={artistOverlayScrollRef} className="h-full overflow-y-auto overflow-x-hidden rf-scroll px-1 py-1">
                 {detailSongs.length === 0 ? (
                   <EmptyState icon={<User size={28} />} title={copy.emptySongs} />
                 ) : (
@@ -2953,7 +2884,7 @@ export const Library: React.FC<LibraryProps> = ({
               />
             </div>
           )}
-          <div className="absolute inset-0 bg-black/28 backdrop-blur-xl customizable-backdrop-medium" />
+          <div className="absolute inset-0 bg-black/40" />
           <button
             type="button"
             aria-label="Close NetEase detail overlay"
@@ -2983,19 +2914,13 @@ export const Library: React.FC<LibraryProps> = ({
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, scale: 0.985, y: 34 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.22, ease: OVERLAY_EASE } }}
             transition={OVERLAY_PANEL_TRANSITION}
-            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/32 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl customizable-backdrop-strong md:p-8"
+            className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/35 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-8"
           >
             <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[2.1rem]">
-              {overlayBackground && (
-                <div
-                  className="absolute inset-0 scale-110 bg-cover bg-center opacity-18 blur-[76px]"
-                  style={{ backgroundImage: `url(${overlayBackground})` }}
-                />
-              )}
               <div className="absolute inset-0 bg-linear-to-br from-white/10 via-black/12 to-black/36" />
             </div>
 
@@ -3010,42 +2935,43 @@ export const Library: React.FC<LibraryProps> = ({
                 <button
                   type="button"
                   onClick={closeOnlineDetail}
-                  className="h-11 rounded-full border border-white/10 bg-white/5 px-4 text-sm font-semibold text-white/75 transition-all hover:bg-white/10 hover:text-white flex items-center gap-2 shrink-0"
+                  className="rf-chrome-button -ml-2 shrink-0"
                 >
                   <ChevronLeft size={18} />
                   <span>{copy.back}</span>
                 </button>
 
-                {isAlbumDetail && onlineDetailState && (
-                  <button
-                    type="button"
-                    onClick={() => { void toggleAlbumFavorite(onlineDetailState); }}
-                    className={cn(
-                      'rounded-full border px-4 py-3 text-sm font-semibold transition-all flex items-center gap-2',
-                      favoriteAlbumIds.has(onlineDetailState.id)
-                        ? 'border-white/15 bg-white/10 text-rose-300 hover:text-rose-200'
-                        : 'border-white/10 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
-                    )}
-                  >
-                    <Heart size={16} fill={favoriteAlbumIds.has(onlineDetailState.id) ? 'currentColor' : 'none'} />
-                    <span>{favoriteAlbumIds.has(onlineDetailState.id) ? copy.removeFromFavorites : copy.addToFavorites}</span>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => onPlaySongs(onlineDetailSongs, 0, null)} disabled={isOnlineDetailLoading || onlineDetailSongs.length === 0} className="rf-primary-button">
+                    <Play size={16} fill="currentColor" />
+                    <span>{copy.playAll}</span>
                   </button>
-                )}
+                  {isAlbumDetail && onlineDetailState && (
+                    <button
+                      type="button"
+                      onClick={() => { void toggleAlbumFavorite(onlineDetailState); }}
+                      className={cn('rf-ghost-button', favoriteAlbumIds.has(onlineDetailState.id) && 'text-rose-300 hover:text-rose-200')}
+                    >
+                      <Heart size={16} fill={favoriteAlbumIds.has(onlineDetailState.id) ? 'currentColor' : 'none'} />
+                      <span>{favoriteAlbumIds.has(onlineDetailState.id) ? copy.removeFromFavorites : copy.addToFavorites}</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex flex-col items-start gap-5 lg:flex-row lg:items-end">
                 <div className="aspect-square w-full max-w-[14rem] shrink-0 opacity-0" aria-hidden="true" />
 
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-mono uppercase tracking-[0.24em] text-white/35">
+                  <p className="rf-hero-kicker">
                     {isAlbumDetail ? copy.albums : copy.artists}
                   </p>
-                  <h2 className="mt-2 truncate text-3xl font-black tracking-tight text-white md:text-5xl">
+                  <h2 className="rf-hero-title">
                     {onlineDetailState.name}
                   </h2>
                   <p className="mt-2 text-sm text-white/60">{detailSubtitle}</p>
                   <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-[11px] font-semibold text-white/65">
+                    <span className="rf-chip">
                       {copy.songs(detailCount)}
                     </span>
                   </div>
@@ -3058,9 +2984,9 @@ export const Library: React.FC<LibraryProps> = ({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8, transition: { duration: 0.12 } }}
               transition={{ delay: 0.12, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-[1.75rem] border border-white/8 bg-black/22 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.018)]"
+              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl"
             >
-              <div ref={onlineDetailOverlayScrollRef} className="h-full overflow-y-auto px-3 py-3 scrollbar-hide md:px-4 md:py-4">
+              <div ref={onlineDetailOverlayScrollRef} className="h-full overflow-y-auto overflow-x-hidden rf-scroll px-1 py-1">
                 {isOnlineDetailLoading ? (
                   <EmptyState icon={isAlbumDetail ? <Disc size={28} /> : <User size={28} />} title={copy.loadingDetail} />
                 ) : onlineDetailSongs.length === 0 ? (
@@ -3101,69 +3027,11 @@ export const Library: React.FC<LibraryProps> = ({
     }
 
     if (section === 'all') {
-      return renderHeaderBlock(false, undefined, (
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => setAllSongsViewMode('grid')}
-            className={cn(
-              'rounded-2xl px-4 py-3 border text-sm font-semibold transition-all flex items-center gap-2',
-              allSongsViewMode === 'grid'
-                ? 'bg-white text-black border-white shadow-lg'
-                : 'bg-white/5 border-white/10 text-white/75 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            <LayoutGrid size={16} />
-            <span>Grid</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setAllSongsViewMode('list')}
-            className={cn(
-              'rounded-2xl px-4 py-3 border text-sm font-semibold transition-all flex items-center gap-2',
-              allSongsViewMode === 'list'
-                ? 'bg-white text-black border-white shadow-lg'
-                : 'bg-white/5 border-white/10 text-white/75 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            <List size={16} />
-            <span>List</span>
-          </button>
-        </div>
-      ));
+      return renderHeaderBlock(false, undefined, renderViewModeToggle(allSongsViewMode, setAllSongsViewMode));
     }
 
     if (section === 'favoriteSongs') {
-      return renderHeaderBlock(false, undefined, (
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => setFavoriteSongsViewMode('grid')}
-            className={cn(
-              'rounded-2xl px-4 py-3 border text-sm font-semibold transition-all flex items-center gap-2',
-              favoriteSongsViewMode === 'grid'
-                ? 'bg-white text-black border-white shadow-lg'
-                : 'bg-white/5 border-white/10 text-white/75 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            <LayoutGrid size={16} />
-            <span>Grid</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setFavoriteSongsViewMode('list')}
-            className={cn(
-              'rounded-2xl px-4 py-3 border text-sm font-semibold transition-all flex items-center gap-2',
-              favoriteSongsViewMode === 'list'
-                ? 'bg-white text-black border-white shadow-lg'
-                : 'bg-white/5 border-white/10 text-white/75 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            <List size={16} />
-            <span>List</span>
-          </button>
-        </div>
-      ));
+      return renderHeaderBlock(false, undefined, renderViewModeToggle(favoriteSongsViewMode, setFavoriteSongsViewMode));
     }
 
     return renderHeaderBlock();
@@ -3171,21 +3039,20 @@ export const Library: React.FC<LibraryProps> = ({
 
   return (
     <PlaybackContext.Provider value={{ currentSong, onQueueNext, language }}><LayoutGroup>
-      <div className="relative flex h-full w-full flex-col overflow-hidden px-5 py-5 md:px-6 md:py-6">
+      <div className="relative flex h-full w-full flex-col overflow-hidden px-5 pt-5 pb-3 md:px-7 md:pt-6">
         {renderSectionHeader()}
 
-        <div className="relative min-h-0 flex-1 overflow-hidden rounded-[1.85rem] bg-black/12 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.022)] transform-[translateZ(0)] isolate">
+        <div className="relative min-h-0 flex-1 overflow-hidden rounded-[1.5rem] isolate">
           <div
             ref={scrollContainerRef}
             onScroll={(event) => scheduleScrollMetricsUpdate(event.currentTarget)}
-            className="h-full w-full overflow-y-auto rf-scroll px-1.5 py-1.5 md:px-2 md:py-2"
+            data-fade-top={!shouldShowLoadingState && showTopEdgeBlur ? 'true' : undefined}
+            data-fade-bottom={!shouldShowLoadingState && showBottomEdgeBlur ? 'true' : undefined}
+            className="rf-scroll-fade h-full w-full overflow-y-auto overflow-x-hidden rf-scroll px-1 py-1"
           >
             <div className="min-h-full">
               {shouldShowLoadingState ? (
-                <div className="min-h-80 rounded-4xl border border-white/10 bg-black/15 backdrop-blur-2xl customizable-backdrop-medium flex flex-col items-center justify-center gap-4 text-white/35">
-                  <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin" />
-                  <p className="font-mono text-xs tracking-widest uppercase">Loading Library...</p>
-                </div>
+                <ListSkeleton label={language === 'zh-CN' ? '正在加载媒体库…' : 'Loading library…'} />
               ) : section === 'playlists' ? (
                 renderPlaylistSection()
               ) : section === 'all' ? (
@@ -3204,30 +3071,6 @@ export const Library: React.FC<LibraryProps> = ({
             </div>
           </div>
 
-          {!shouldShowLoadingState && (showTopEdgeBlur || showBottomEdgeBlur) && (
-            <>
-              {showTopEdgeBlur && (
-                <div
-                  className="pointer-events-none absolute left-0 right-0 top-0 z-10 h-18 rounded-t-[1.85rem] bg-linear-to-b from-black/72 via-black/38 via-50% to-transparent backdrop-blur-lg"
-                  style={{
-                    maskImage: 'linear-gradient(to bottom, rgba(0, 0, 0, 1) 8%, rgba(0, 0, 0, 0.84) 34%, rgba(0, 0, 0, 0.42) 64%, transparent 100%)',
-                    WebkitMaskImage: 'linear-gradient(to bottom, rgba(0, 0, 0, 1) 8%, rgba(0, 0, 0, 0.84) 34%, rgba(0, 0, 0, 0.42) 64%, transparent 100%)',
-                  }}
-                />
-              )}
-              {showBottomEdgeBlur && (
-                <div
-                  className="pointer-events-none absolute left-0 right-0 bottom-0 z-10 h-18 rounded-b-[1.85rem] bg-linear-to-t from-black/76 via-black/36 via-50% to-transparent backdrop-blur-lg"
-                  style={{
-                    maskImage: 'linear-gradient(to top, rgba(0, 0, 0, 1) 8%, rgba(0, 0, 0, 0.84) 34%, rgba(0, 0, 0, 0.42) 64%, transparent 100%)',
-                    WebkitMaskImage: 'linear-gradient(to top, rgba(0, 0, 0, 1) 8%, rgba(0, 0, 0, 0.84) 34%, rgba(0, 0, 0, 0.42) 64%, transparent 100%)',
-                  }}
-                />
-              )}
-            </>
-          )}
-
-          <div className="pointer-events-none absolute inset-0 rounded-[1.85rem] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]" />
         </div>
 
         {renderArtistOverlay()}

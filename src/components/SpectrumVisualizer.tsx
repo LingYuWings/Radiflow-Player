@@ -14,17 +14,27 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({ analyser
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx || mode === 'off') return;
+    // Spectrum retains its original frequency resolution; waveform needs a
+    // longer time window to show bass cycles instead of a near-straight segment.
+    const originalFftSize = analyser?.fftSize;
+    if (analyser && mode === 'waveform') analyser.fftSize = Math.max(2048, analyser.fftSize);
     let frame = 0;
     let lastFrame = -Infinity;
     let gradient: CanvasGradient;
     const data = new Uint8Array((mode === 'waveform' ? analyser?.fftSize : analyser?.frequencyBinCount) || 256);
     const points = new Float32Array(128);
+    const waveformState = { gain: 1 };
+    let lastRatio = 0;
     let width = 1, height = 1;
     let waveGradient: CanvasGradient;
     const resize = () => {
-      width = Math.max(1, canvas.clientWidth);
-      height = Math.max(1, canvas.clientHeight);
+      const nextWidth = Math.max(1, canvas.clientWidth);
+      const nextHeight = Math.max(1, canvas.clientHeight);
       const ratio = Math.min(2, window.devicePixelRatio || 1);
+      if (nextWidth === width && nextHeight === height && ratio === lastRatio) return;
+      width = nextWidth;
+      height = nextHeight;
+      lastRatio = ratio;
       canvas.width = Math.round(width * ratio);
       canvas.height = Math.round(height * ratio);
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -49,7 +59,7 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({ analyser
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = gradient;
       if (mode === 'waveform') {
-        updateWaveform(data, points, elapsed);
+        updateWaveform(data, points, elapsed, waveformState);
         ctx.strokeStyle = waveGradient;
         ctx.lineWidth = 1.6;
         ctx.lineJoin = 'round';
@@ -91,6 +101,7 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({ analyser
       cancelAnimationFrame(frame);
       observer.disconnect();
       document.removeEventListener('visibilitychange', resume);
+      if (analyser && originalFftSize !== undefined && mode === 'waveform') analyser.fftSize = originalFftSize;
     };
   }, [analyser, isPlaying, mode]);
   return mode === 'off' ? null : <canvas ref={canvasRef} aria-hidden="true" className="w-full h-[60px] opacity-80" />;

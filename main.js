@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, nativeImage, screen } from 'electron';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs';
@@ -34,6 +34,14 @@ function getDefaultMusicPath() {
 
 let mainWindow;
 let tray;
+let desktopLyricsWindow = null;
+let desktopLyricsLocked = false;
+// Last payloads from the player, replayed when the lyrics window (re)opens.
+const desktopLyricsCache = { track: null, clock: null };
+const DESKTOP_LYRICS_CONTROLS = new Set(['toggle-play', 'next', 'prev']);
+const DESKTOP_LYRICS_WIDTH = 960;
+const DESKTOP_LYRICS_HEIGHT = 200;
+const DESKTOP_LYRICS_BOTTOM_GAP = 56;
 let musicPath = getDefaultMusicPath();
 let packagedServer;
 let packagedServerUrl;
@@ -333,6 +341,16 @@ async function startPackagedLocalServer() {
   throw lastError ?? new Error('Could not find an available port for the packaged server.');
 }
 
+// Both windows load the same renderer bundle; the hash selects the surface.
+function loadRenderer(window, hash = '') {
+  const baseUrl = startUrl || (isDev ? 'http://localhost:3000' : packagedServerUrl);
+  if (baseUrl) {
+    window.loadURL(hash ? `${baseUrl}#${hash}` : baseUrl);
+  } else {
+    window.loadFile(path.join(__dirname, 'dist/index.html'), hash ? { hash } : undefined);
+  }
+}
+
 // Window creation stays focused on native shell concerns only: startup URL
 // selection, frameless chrome behavior, and shell-specific event forwarding.
 function createWindow() {
@@ -360,15 +378,7 @@ function createWindow() {
     },
   });
 
-  if (startUrl) {
-    mainWindow.loadURL(startUrl);
-  } else if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
-  } else if (packagedServerUrl) {
-    mainWindow.loadURL(packagedServerUrl);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, 'dist/index.html'));
-  }
+  loadRenderer(mainWindow);
 
   if (shouldOpenDevTools) {
     mainWindow.webContents.openDevTools();
@@ -388,6 +398,8 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // The lyrics overlay must not keep the app alive without its player.
+    desktopLyricsWindow?.destroy();
   });
 
   mainWindow.on('resize', () => {
@@ -417,16 +429,92 @@ function createTray() {
   }
 
   tray = new Tray(appIcon);
-  const contextMenu = Menu.buildFromTemplate([
+  tray.setToolTip(APP_NAME);
+  updateTrayMenu();
+}
+
+function updateTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate([
     { label: '播放/暂停', click: () => mainWindow?.webContents.send('player-control', 'toggle-play') },
     { label: '下一曲', click: () => mainWindow?.webContents.send('player-control', 'next') },
     { label: '上一曲', click: () => mainWindow?.webContents.send('player-control', 'prev') },
     { type: 'separator' },
+    { label: '桌面歌词', type: 'checkbox', checked: Boolean(desktopLyricsWindow), click: (item) => setDesktopLyricsVisible(item.checked) },
+    { label: '锁定桌面歌词', type: 'checkbox', checked: desktopLyricsLocked, enabled: Boolean(desktopLyricsWindow), click: (item) => setDesktopLyricsLocked(item.checked) },
+    { type: 'separator' },
     { label: '退出', click: () => app.quit() }
-  ]);
-  tray.setToolTip(APP_NAME);
-  tray.setContextMenu(contextMenu);
+  ]));
 }
+
+// Desktop lyrics: a transparent, always-on-top overlay. It is isolated from Node
+// and only receives state relayed from the player window through this process.
+function createDesktopLyricsWindow() {
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = Math.min(DESKTOP_LYRICS_WIDTH, workArea.width - 80);
+  desktopLyricsWindow = new BrowserWindow({
+    width,
+    height: DESKTOP_LYRICS_HEIGHT,
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + workArea.height - DESKTOP_LYRICS_HEIGHT - DESKTOP_LYRICS_BOTTOM_GAP,
+    title: `${APP_NAME} · 桌面歌词`,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    alwaysOnTop: true,
+    show: false,
+    icon: appIcon,
+    webPreferences: {
+      preload: path.join(__dirname, 'desktop-lyrics-preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  desktopLyricsWindow.setAlwaysOnTop(true, 'screen-saver');
+  loadRenderer(desktopLyricsWindow, 'desktop-lyrics');
+  desktopLyricsWindow.once('ready-to-show', () => desktopLyricsWindow?.showInactive());
+  desktopLyricsWindow.on('closed', () => {
+    desktopLyricsWindow = null;
+    mainWindow?.webContents.send('desktop-lyrics:visibility-changed', false);
+    updateTrayMenu();
+  });
+  applyDesktopLyricsLock();
+}
+
+function setDesktopLyricsVisible(visible) {
+  if (visible && !desktopLyricsWindow) {
+    createDesktopLyricsWindow();
+  } else if (!visible && desktopLyricsWindow) {
+    desktopLyricsWindow.close();
+    return false;
+  }
+  mainWindow?.webContents.send('desktop-lyrics:visibility-changed', Boolean(desktopLyricsWindow));
+  updateTrayMenu();
+  return Boolean(desktopLyricsWindow);
+}
+
+function applyDesktopLyricsLock() {
+  // Locked: clicks fall through to the desktop; mouse moves are still forwarded
+  // so the overlay can offer an unlock button on hover.
+  desktopLyricsWindow?.setIgnoreMouseEvents(desktopLyricsLocked, { forward: true });
+  desktopLyricsWindow?.webContents.send('desktop-lyrics:locked', desktopLyricsLocked);
+}
+
+function setDesktopLyricsLocked(locked) {
+  desktopLyricsLocked = Boolean(locked);
+  applyDesktopLyricsLock();
+  updateTrayMenu();
+}
+
+const isFromMainWindow = (event) => Boolean(mainWindow) && event.sender === mainWindow.webContents;
+const isFromDesktopLyrics = (event) => Boolean(desktopLyricsWindow) && event.sender === desktopLyricsWindow.webContents;
 
 // Media keys are registered centrally because Electron only exposes them at the
 // main-process level.
@@ -560,4 +648,47 @@ ipcMain.handle('window:restart-with-shell-mode', async (event, transparentWindow
 ipcMain.on('media:update-playback-state', (_event, { isPlaying, hasActiveSong, currentTime, duration }) => {
   updateThumbarButtons(isPlaying, hasActiveSong);
   updateTaskbarProgress(currentTime, duration);
+});
+
+ipcMain.handle('desktop-lyrics:set-visible', (event, visible) => {
+  if (!isFromMainWindow(event)) return Boolean(desktopLyricsWindow);
+  return setDesktopLyricsVisible(Boolean(visible));
+});
+
+ipcMain.on('desktop-lyrics:track', (event, payload) => {
+  if (!isFromMainWindow(event)) return;
+  desktopLyricsCache.track = payload;
+  desktopLyricsWindow?.webContents.send('desktop-lyrics:track', payload);
+});
+
+ipcMain.on('desktop-lyrics:clock', (event, payload) => {
+  if (!isFromMainWindow(event)) return;
+  desktopLyricsCache.clock = payload;
+  desktopLyricsWindow?.webContents.send('desktop-lyrics:clock', payload);
+});
+
+ipcMain.on('desktop-lyrics:ready', (event) => {
+  if (!isFromDesktopLyrics(event)) return;
+  if (desktopLyricsCache.track) event.sender.send('desktop-lyrics:track', desktopLyricsCache.track);
+  if (desktopLyricsCache.clock) event.sender.send('desktop-lyrics:clock', desktopLyricsCache.clock);
+  event.sender.send('desktop-lyrics:locked', desktopLyricsLocked);
+});
+
+ipcMain.on('desktop-lyrics:set-locked', (event, locked) => {
+  if (isFromDesktopLyrics(event)) setDesktopLyricsLocked(locked);
+});
+
+ipcMain.on('desktop-lyrics:set-ignore-mouse', (event, ignore) => {
+  // Only the hover-to-unlock affordance may lift click-through while locked.
+  if (!isFromDesktopLyrics(event) || !desktopLyricsLocked) return;
+  desktopLyricsWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true });
+});
+
+ipcMain.on('desktop-lyrics:control', (event, command) => {
+  if (!isFromDesktopLyrics(event) || !DESKTOP_LYRICS_CONTROLS.has(command)) return;
+  mainWindow?.webContents.send('player-control', command);
+});
+
+ipcMain.on('desktop-lyrics:close', (event) => {
+  if (isFromDesktopLyrics(event)) setDesktopLyricsVisible(false);
 });

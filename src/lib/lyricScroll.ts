@@ -10,3 +10,13 @@ export function stepLyricScroll(position: number, velocity: number, target: numb
     velocity: (velocity - frequency * impulse * dt) * decay,
   };
 }
+
+// Move with layout changes before easing the remaining visual distance. Expanding
+// translations must not become a second moving target for the scroll spring.
+export function stepAnchoredLyricScroll(position: number, velocity: number, previousTarget: number, target: number, seconds: number) {
+  const compensated = position + target - previousTarget;
+  const distance = target - compensated;
+  const next = stepLyricScroll(compensated, velocity * distance < 0 ? 0 : velocity, target, seconds);
+  if ((target - next.position) * distance <= 0) return { position: target, velocity: 0 };
+  return next;
+}

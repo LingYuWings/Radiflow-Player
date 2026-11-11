@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import path from 'path';
+import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,6 +12,15 @@ const electronCliPath = path.join(rootDir, 'node_modules', 'electron', 'cli.js')
 const previewPort = process.env.ELECTRON_PREVIEW_PORT ?? '4173';
 const previewUrl = `http://127.0.0.1:${previewPort}`;
 const previewUserDataDir = path.join(rootDir, '.electron-preview');
+const traceArgs = [];
+if (process.argv.includes('--trace')) {
+  const traceDir = path.join(previewUserDataDir, 'performance');
+  mkdirSync(traceDir, { recursive: true });
+  const tracePath = path.join(traceDir, `renderer-${Date.now()}.json`);
+  traceArgs.push('--trace-startup=toplevel,devtools.timeline,disabled-by-default-devtools.timeline.frame',
+    '--trace-startup-duration=60', '--trace-startup-format=json', `--trace-startup-file=${tracePath}`);
+  console.log(`Local performance trace (60s): ${tracePath}`);
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -76,7 +86,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 try {
   await waitForServer(previewUrl);
 
-  electronProcess = spawn(nodeExecutable, [electronCliPath, '.'], {
+  electronProcess = spawn(nodeExecutable, [electronCliPath, '.', ...traceArgs], {
     cwd: rootDir,
     stdio: 'inherit',
     env: {

@@ -6,6 +6,8 @@ import { SpectrumVisualizer } from './SpectrumVisualizer';
 import { PlaybackSlider } from './PlaybackSlider';
 import { useAudioClock } from '../hooks/useAudioClock';
 import type { VisualizerMode } from '../lib/visualizer';
+import type { PlaybackFeedbackStore } from '../lib/playbackFeedback';
+import { playbackAction, PlaybackStateIcon, PlaybackStatusLine, usePlaybackStatus } from './PlaybackStatus';
 
 const TITLE_MARQUEE_PADDING_PX = 24;
 const TITLE_MARQUEE_THRESHOLD_PX = 1;
@@ -13,6 +15,8 @@ const TITLE_MARQUEE_THRESHOLD_PX = 1;
 export type LoopMode = 'none' | 'all' | 'one';
 
 interface PlayerControlsProps {
+  statusStore?: PlaybackFeedbackStore;
+  visualizerActive?: boolean;
   visualizerMode?: VisualizerMode;
   audioRef?: React.RefObject<HTMLAudioElement | null>;
   language?: 'zh-CN' | 'en-US';
@@ -42,6 +46,8 @@ interface PlayerControlsProps {
 }
 
 export const PlayerControls: React.FC<PlayerControlsProps> = ({
+  statusStore,
+  visualizerActive = true,
   visualizerMode = 'spectrum',
   language = 'zh-CN',
   isPlaying,
@@ -68,6 +74,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   onToggleLyrics,
   onMinimize
 }) => {
+  const status = usePlaybackStatus(statusStore);
   const currentTime = useAudioClock(audioRef, fallbackTime);
   const t = (cn: string, en: string) => language === 'zh-CN' ? cn : en;
   // Keep formatting local to the control surface so the rest of the app can work
@@ -172,7 +179,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   return (
     <div className="rf-player-controls flex flex-col gap-6 w-full max-w-md">
       {/* Only the title scrolls; keeping the artist static reduces motion noise. */}
-      <div className="flex items-start justify-between overflow-hidden pl-4">
+      <div data-guide="guide-player-track" className="flex items-start justify-between overflow-hidden pl-4">
         <div className="flex flex-col min-w-0 gap-1">
           <div ref={titleContainerRef} className="marquee-container" style={titleMarqueeStyle}>
             <h3
@@ -196,20 +203,21 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
         </button>
       </div>
 
-      {visualizerMode !== 'off' && <div className="px-4">
-        <SpectrumVisualizer analyser={analyser} isPlaying={isPlaying} mode={visualizerMode} />
+      {visualizerMode !== 'off' && <div data-guide="guide-player-visualizer" className="px-4">
+        <SpectrumVisualizer analyser={analyser} isPlaying={isPlaying && visualizerActive} mode={visualizerMode} />
       </div>}
 
-      <div className="flex flex-col gap-2">
-        <PlaybackSlider value={currentTime} max={duration} onChange={onSeek} label={t('播放进度', 'Playback position')} disabled={controlsDisabled} time />
+      <div data-guide="guide-player-progress" className="flex flex-col gap-2">
+        <PlaybackSlider audioRef={audioRef} value={currentTime} max={duration} onChange={onSeek} label={t('播放进度', 'Playback position')} disabled={controlsDisabled} time />
         <div className="flex justify-between text-[10px] font-mono text-white/40 uppercase tracking-widest">
           <span>{formatTime(currentTime)}</span>
           <span>{formatTime(duration)}</span>
         </div>
+        <PlaybackStatusLine status={controlsDisabled ? 'idle' : status} language={language} />
       </div>
 
       <div className="flex items-center justify-between gap-4 px-4">
-        <div className="flex items-center gap-4">
+        <div data-guide="guide-player-modes" className="flex items-center gap-4">
           <button 
             onClick={onToggleLoop}
             disabled={controlsDisabled}
@@ -232,17 +240,17 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
           </button>
         </div>
 
-        <div className="flex items-center gap-6">
+        <div data-guide="guide-player-transport" className="flex items-center gap-6">
           <button aria-label={t('上一首', 'Previous')} onClick={onPrev} disabled={controlsDisabled} className="text-white/60 hover:text-white transition-colors disabled:opacity-35 disabled:hover:text-white/60">
             <SkipBack size={28} fill="currentColor" />
           </button>
           <button 
             onClick={onTogglePlay}
-            aria-label={isPlaying ? t('暂停', 'Pause') : t('播放', 'Play')}
+            aria-label={playbackAction(status, isPlaying, language)}
             disabled={controlsDisabled}
             className="w-14 h-14 rounded-full bg-white flex items-center justify-center text-black hover:scale-105 transition-transform disabled:opacity-45 disabled:hover:scale-100"
           >
-            {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
+            <PlaybackStateIcon status={status} playing={isPlaying} size={28} />
           </button>
           <button aria-label={t('下一首', 'Next')} onClick={onNext} disabled={controlsDisabled} className="text-white/60 hover:text-white transition-colors disabled:opacity-35 disabled:hover:text-white/60">
             <SkipForward size={28} fill="currentColor" />
@@ -251,6 +259,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
 
         <div className="flex items-center gap-4">
           <button 
+            data-guide="guide-player-queue"
             onClick={onTogglePlaylist}
             disabled={controlsDisabled}
             className={cn(
@@ -263,6 +272,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
             <ListMusic size={20} />
           </button>
           <button 
+            data-guide="guide-player-lyrics"
             onClick={onToggleLyrics}
             disabled={controlsDisabled}
             className={cn(
@@ -277,7 +287,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
         </div>
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div data-guide="guide-player-volume" className="flex flex-col gap-2">
         <div className="flex items-center gap-2 text-[10px] font-mono text-white/40 uppercase tracking-widest">
           <Volume2 size={12} />
           <span>{t('音量', 'Volume')}</span>

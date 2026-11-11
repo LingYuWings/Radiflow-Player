@@ -1,10 +1,11 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { LyricLine } from '../utils/lyricsParser';
-import { lyricWordProgress, lyricWordGlow } from '../lib/lyricProgress';
+import { lyricWordProgress } from '../lib/lyricProgress';
+import { findActiveLyricIndex, useLyricWordPaint } from '../hooks/useLyricWordPaint';
 import { cn } from '../lib/utils';
 import { useAudioClock } from '../hooks/useAudioClock';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { stepLyricScroll } from '../lib/lyricScroll';
+import { stepAnchoredLyricScroll } from '../lib/lyricScroll';
 
 interface LyricsViewProps {
   lyrics: LyricLine[];
@@ -20,10 +21,7 @@ export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, aud
   const scrollVelocity = useRef(0);
   const timeRef = useRef(currentTime);
   timeRef.current = currentTime;
-  const selectLine = useCallback((time: number) => lyrics.findIndex(
-    (line, index) => time >= line.startTime &&
-      (index === lyrics.length - 1 || time < lyrics[index + 1].startTime)
-  ), [lyrics]);
+  const selectLine = useCallback((time: number) => findActiveLyricIndex(lyrics, time), [lyrics]);
   const activeIndex = useAudioClock(audioRef, currentTime, selectLine);
 
   useEffect(() => {
@@ -34,10 +32,15 @@ export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, aud
     let position = container.scrollTop;
     let previousTime = performance.now();
     let settleAfter = previousTime + 750;
-    const target = () => Math.min(container.scrollHeight - container.clientHeight, Math.max(0, line.offsetTop - container.clientHeight / 2 + line.offsetHeight / 2));
+    const originalText = line.querySelector<HTMLElement>('.rf-lyric-text');
+    // The original text is the anchor, not the expanding bilingual block.
+    const target = () => Math.max(0, Math.min(container.scrollHeight - container.clientHeight,
+      line.offsetTop + (originalText ? originalText.offsetTop + originalText.offsetHeight / 2 : line.offsetHeight / 2) - container.clientHeight / 2));
+    let previousTarget = target();
     const follow = (now: number) => {
       const destination = target();
-      const next = stepLyricScroll(position, scrollVelocity.current, destination, (now - previousTime) / 1000);
+      const next = stepAnchoredLyricScroll(position, scrollVelocity.current, previousTarget, destination, (now - previousTime) / 1000);
+      previousTarget = destination;
       previousTime = now;
       position = next.position;
       scrollVelocity.current = next.velocity;
@@ -55,6 +58,7 @@ export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, aud
       settleAfter = performance.now() + 750;
       if (!frame) {
         position = container.scrollTop;
+        previousTarget = target();
         previousTime = performance.now();
         frame = requestAnimationFrame(follow);
       }
@@ -62,7 +66,6 @@ export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, aud
     center();
     const observer = new ResizeObserver(center);
     observer.observe(container);
-    const originalText = line.querySelector('.rf-lyric-text');
     if (originalText) observer.observe(originalText);
     const stopFollowing = () => { cancelAnimationFrame(frame); frame = 0; scrollVelocity.current = 0; };
     container.addEventListener('wheel', stopFollowing, { passive: true });
@@ -75,64 +78,7 @@ export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, aud
     };
   }, [activeIndex, lyrics, reducedMotion]);
 
-  useEffect(() => {
-    const words = lyrics[activeIndex]?.words;
-    const line = activeLineRef.current;
-    if (!words?.length || !line) return;
-    const elements = Array.from(line.querySelectorAll('[data-lyric-word]')) as HTMLElement[];
-    const audio = audioRef?.current;
-    let frame = 0;
-    let lastTime = -1;
-    const previous = elements.map(() => '');
-    const previousGlow = elements.map(() => '');
-    const paint = () => {
-      const time = audio ? audio.currentTime : timeRef.current;
-      if (time === lastTime) return;
-      lastTime = time;
-      elements.forEach((element, index) => {
-        const word = words[index];
-        const progress = lyricWordProgress(time, word.startTime, word.duration);
-        const glow = lyricWordGlow(time, word.startTime, word.duration).toFixed(3);
-        if (previousGlow[index] !== glow) {
-          element.style.setProperty('--lyric-glow', glow);
-          previousGlow[index] = glow;
-        }
-        const fill = `${(progress * 100).toFixed(2)}%`;
-        if (previous[index] !== fill) {
-          element.style.setProperty('--lyric-fill', fill);
-          element.dataset.fill = progress <= 0 ? 'empty' : progress >= 1 ? 'full' : 'partial';
-          previous[index] = fill;
-        }
-        const singing = String(time >= word.startTime && time < word.startTime + word.duration);
-        if (element.dataset.singing !== singing) element.dataset.singing = singing;
-      });
-    };
-    const tick = () => {
-      paint();
-      frame = audio && !audio.paused && !audio.ended && !document.hidden
-        ? requestAnimationFrame(tick) : 0;
-    };
-    // Audio events update immediately, but must not restart a healthy frame loop.
-    // Repeated timeupdate cancellation can otherwise create a visible cadence.
-    const sync = () => {
-      paint();
-      if (!audio || audio.paused || audio.ended || document.hidden) {
-        cancelAnimationFrame(frame);
-        frame = 0;
-      } else if (!frame) {
-        frame = requestAnimationFrame(tick);
-      }
-    };
-    sync();
-    const events = ['play', 'pause', 'seeking', 'seeked', 'timeupdate', 'ended'] as const;
-    events.forEach((event) => audio?.addEventListener(event, sync));
-    document.addEventListener('visibilitychange', sync);
-    return () => {
-      cancelAnimationFrame(frame);
-      events.forEach((event) => audio?.removeEventListener(event, sync));
-      document.removeEventListener('visibilitychange', sync);
-    };
-  }, [activeIndex, lyrics, audioRef]);
+  useLyricWordPaint(activeLineRef, lyrics[activeIndex], audioRef, timeRef);
 
   return (
     <div ref={containerRef} className="rf-lyric-surface relative h-full overflow-y-auto px-8 py-[40vh] scrollbar-hide mask-fade-edges">
@@ -153,7 +99,7 @@ export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, aud
                   event.preventDefault(); event.stopPropagation(); onSeek(line.startTime);
                 }
               }}
-              className={cn('rf-lyric-line origin-left', isActive ? 'rf-lyric-line-current' : index < activeIndex ? 'rf-lyric-line-past' : '', Math.abs(index - activeIndex) > 2 && 'rf-lyric-line-distant')}
+              className={cn('relative rf-lyric-line origin-left', isActive ? 'rf-lyric-line-current' : index < activeIndex ? 'rf-lyric-line-past' : '', Math.abs(index - activeIndex) > 2 && 'rf-lyric-line-distant')}
             >
               <div className="rf-lyric-text text-3xl md:text-5xl font-bold tracking-tight leading-tight">
                 {line.words?.length ? line.words.map((word, wordIndex) => (

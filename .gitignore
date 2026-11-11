@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Local UI iteration plan
+/UI-ITERATION-PLAN.local.md
+
 # Build outputs
 dist/
 dist-electron/
@@ -29,9 +32,9 @@ pnpm-debug.log*
 !.env.example
 !.env.sample
 
-# Repository-local music data and caches
-/music/local/
-/music/lyric/
+# Local music library and runtime data
+/music/
+/player-data/
 
 # Editors and IDEs
 .idea/

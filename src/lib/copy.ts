@@ -255,7 +255,7 @@ export const APP_COPY: Record<AppLanguage, AppCopy> = {
 			neteaseQrHint: '二维码登录会直接使用客户端内置的网易云接口。',
 			appearance: '外观',
 			backgroundSource: '背景来源',
-			useBuiltInBackground: '项目内置背景',
+			useBuiltInBackground: '内置背景',
 			useCustomBackground: '自定义背景',
 			useTransparentBackground: '透明背景',
 			customBackgroundDescription: '上传一张背景图片，并自定义其模糊程度。启用后将覆盖当前歌曲封面和内置背景效果。',

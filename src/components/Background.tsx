@@ -18,14 +18,14 @@ interface StreamerPaletteState {
 }
 
 const DEFAULT_STREAMER_COLORS = ['rgb(82, 82, 82)', 'rgb(38, 38, 38)'];
-const STREAMER_PALETTE_COLOR_COUNT = 6;
-const STREAMER_PALETTE_QUALITY = 6;
+const STREAMER_PALETTE_COLOR_COUNT = 10;
+const STREAMER_PALETTE_QUALITY = 5;
 const STREAMER_PALETTE_MIN_SATURATION = 0.04;
 const MIN_STREAMER_LIGHTNESS = 24;
 const MAX_STREAMER_LIGHTNESS = 74;
 const MIN_STREAMER_SATURATION = 18;
 const MAX_STREAMER_SATURATION = 92;
-const STREAMER_SPEED_MULTIPLIER = 0.88;
+const STREAMER_SPEED_MULTIPLIER = 0.62;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -157,7 +157,7 @@ const buildStreamerColors = (palette: unknown): string[] => {
     .sort((left, right) => right.score - left.score)
     .map((entry) => entry.color)
     .filter((color, index, values) => values.indexOf(color) === index)
-    .slice(0, 4);
+    .slice(0, 8);
 
   return colors.length > 0 ? colors : DEFAULT_STREAMER_COLORS;
 };
@@ -181,6 +181,37 @@ const BLOB_CONFIGS = [
   { duration:  70, xKeys: [0,  -80, -160,  -50, 0], yKeys: [0,  200,  130,   280, 0], left: '25%', top: '88%' },
 ];
 
+// Restore the original six broad fields; four accents add detail, not coverage.
+const ACTIVE_BLOB_CONFIGS = BLOB_CONFIGS.slice(0, 10).map((config, index) => ({
+  ...config,
+  size: index < 6 ? 65 : index < 8 ? 44 : 36,
+  opacity: index < 6 ? 0.85 : 0.76,
+  phase: index * 2.7,
+  xKeys: config.xKeys.map(value => value * 1.3),
+  yKeys: config.yKeys.map(value => value * 1.3),
+}));
+
+// Opaque sampled underpainting covers gaps at every phase and aspect ratio.
+// Blob drift runs as a CSS keyframe animation on the compositor thread; the
+// per-blob path is passed through custom properties instead of JS frames.
+const getBlobMotionStyle = (cfg: typeof ACTIVE_BLOB_CONFIGS[number], reducedMotion: boolean | null): React.CSSProperties => (
+  reducedMotion ? { animation: 'none' } : ({
+    '--bx1': `${cfg.xKeys[1]}px`, '--by1': `${cfg.yKeys[1]}px`,
+    '--bx2': `${cfg.xKeys[2]}px`, '--by2': `${cfg.yKeys[2]}px`,
+    '--bx3': `${cfg.xKeys[3]}px`, '--by3': `${cfg.yKeys[3]}px`,
+    animationDuration: `${cfg.duration * STREAMER_SPEED_MULTIPLIER}s`,
+    animationDelay: `${-cfg.phase}s`,
+  } as React.CSSProperties)
+);
+
+// Painted on the existing palette surface, with no extra animated/filter layer.
+const buildStreamerUnderpaint = (colors: string[]) => {
+  const first = colors[0] || DEFAULT_STREAMER_COLORS[0];
+  const second = colors[1] || first;
+  const third = colors[2] || second;
+  return `linear-gradient(rgb(0 0 0 / 0.55), rgb(0 0 0 / 0.55)), linear-gradient(135deg, ${first}, ${second} 55%, ${third})`;
+};
+
 export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, customBackground = null, transparentBackground = false }) => {
   const reducedMotion = useReducedMotion();
   const [streamerLayers, setStreamerLayers] = useState<StreamerPaletteState[]>([
@@ -188,10 +219,10 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
   ]);
   const paletteRequestIdRef = useRef(0);
   const isUsingCustomBackground = Boolean(customBackground?.imageSrc);
-  const shouldSkipBuiltInBackground = isUsingCustomBackground || transparentBackground;
 
   useEffect(() => {
-    if (shouldSkipBuiltInBackground || !imageSrc) {
+    // Palette also feeds the UI accent, so extract it in every background mode.
+    if (!imageSrc) {
       setStreamerLayers([{ key: 'default', colors: DEFAULT_STREAMER_COLORS }]);
       return;
     }
@@ -234,7 +265,17 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
     return () => {
       isDisposed = true;
     };
-  }, [imageSrc, shouldSkipBuiltInBackground]);
+  }, [imageSrc]);
+
+  const accentColor = streamerLayers.at(-1)?.colors[0];
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!accentColor || DEFAULT_STREAMER_COLORS.includes(accentColor)) {
+      root.style.removeProperty('--rf-accent');
+      return;
+    }
+    root.style.setProperty('--rf-accent', accentColor);
+  }, [accentColor]);
 
   useEffect(() => {
     if (streamerLayers.length < 2) {
@@ -253,7 +294,7 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
 
   return (
     <div
-      className={transparentBackground ? 'fixed inset-0 -z-10 overflow-hidden bg-transparent' : 'fixed inset-0 -z-10 overflow-hidden bg-black'}
+      className={transparentBackground ? 'fixed inset-0 -z-10 overflow-hidden bg-transparent' : 'rf-backdrop fixed inset-0 -z-10 overflow-hidden bg-black'}
       style={{ clipPath: 'inset(0 round 24px)' }}
     >
       {isUsingCustomBackground ? (
@@ -285,37 +326,37 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
             className="absolute inset-0"
           >
             <div
-              className="absolute inset-0 bg-cover bg-center scale-110 blur-[80px] opacity-60 transition-all duration-1000"
+              className="absolute inset-0 bg-cover bg-center scale-110 blur-[7px] opacity-60"
               style={{ backgroundImage: `url(${imageSrc})` }}
             />
           </motion.div>
         </AnimatePresence>
       ) : (
-        <div className="absolute inset-0">
+        <div className="absolute inset-0" style={{ backgroundColor: DEFAULT_STREAMER_COLORS[1] }}>
           <AnimatePresence initial={false}>
             {streamerLayers.map((layer) => (
               <motion.div
                 key={layer.key}
                 className="absolute inset-0"
+                style={{ backgroundImage: buildStreamerUnderpaint(layer.colors) }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.9, ease: 'easeInOut' }}
               >
-                {BLOB_CONFIGS.slice(0, 6).map((cfg, i) => (
+                {ACTIVE_BLOB_CONFIGS.map((cfg, i) => (
                   <div key={`${layer.key}-${i}`} className="absolute" style={{ left: cfg.left, top: cfg.top }}>
-                    <motion.div
-                      className="absolute rounded-full pointer-events-none"
+                    <div
+                      className="rf-blob absolute rounded-full pointer-events-none"
                       style={{
-                        width: '65vw',
-                        height: '65vw',
-                        marginLeft: '-32.5vw',
-                        marginTop: '-32.5vw',
-                        background: `radial-gradient(circle, ${layer.colors[i % layer.colors.length] || layer.colors[0]} 0%, transparent 70%)`,
-                        opacity: 0.85,
+                        width: `${cfg.size}vmax`,
+                        height: `${cfg.size}vmax`,
+                        marginLeft: `${-cfg.size / 2}vmax`,
+                        marginTop: `${-cfg.size / 2}vmax`,
+                        background: `radial-gradient(circle, ${layer.colors[i % layer.colors.length] || layer.colors[0]} 8%, transparent 72%)`,
+                        opacity: cfg.opacity,
+                        ...getBlobMotionStyle(cfg, reducedMotion),
                       }}
-                      animate={reducedMotion ? { x: 0, y: 0 } : { x: cfg.xKeys, y: cfg.yKeys }}
-                      transition={{ duration: cfg.duration * STREAMER_SPEED_MULTIPLIER, repeat: Infinity, ease: 'easeInOut' }}
                     />
                   </div>
                 ))}
@@ -324,7 +365,7 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
           </AnimatePresence>
         </div>
       )}
-      {!transparentBackground && <div className="absolute inset-0 bg-black/40" />}
+      {!transparentBackground && <div className={`absolute inset-0 ${!isUsingCustomBackground && effect === 'streamer' ? 'bg-black/30' : 'bg-black/40'}`} />}
     </div>
   );
 };

@@ -32,8 +32,8 @@ export const WindowChrome: React.FC<WindowChromeProps> = ({
         <div className="flex min-w-0 items-center gap-3">
           <AppLogo className="h-9 w-9 rounded-2xl shadow-lg" />
           <div className="min-w-0">
-            <p className="truncate text-sm font-black tracking-[0.16em] text-white uppercase">{appName}</p>
-            <p className="truncate text-[10px] font-mono uppercase tracking-[0.22em] text-white/35">{subtitle}</p>
+            <p className="truncate font-display text-[15px] font-bold tracking-[-0.01em] text-white">{appName}</p>
+            <p className="truncate text-[11px] font-medium text-white/50">{subtitle}</p>
           </div>
         </div>
 

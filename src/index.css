@@ -1,8 +1,53 @@
 @import "tailwindcss";
 
+/* Type system: Geist for UI, Bricolage for display, Geist Mono for meta labels.
+   CJK glyphs fall through to the best installed system face. */
+@theme {
+  --font-sans: 'Geist Variable', 'HarmonyOS Sans SC', 'MiSans', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-display: 'Bricolage Grotesque Variable', 'Geist Variable', 'HarmonyOS Sans SC', 'MiSans', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'Cascadia Mono', 'HarmonyOS Sans SC', 'Microsoft YaHei UI', monospace;
+}
+
+/* Album-derived accent, published by Background; neutral when no artwork. */
+:root {
+  --rf-accent: hsl(210 30% 72%);
+  --rf-accent-soft: color-mix(in oklch, var(--rf-accent) 35%, white);
+  --rf-accent-glow: color-mix(in oklch, var(--rf-accent) 45%, transparent);
+  --rf-ease-out: cubic-bezier(.16,1,.3,1);
+  transition: --rf-accent .8s;
+}
+@property --rf-accent { syntax: '<color>'; inherits: true; initial-value: hsl(210 30% 72%); }
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: color-mix(in oklch, var(--rf-accent) 45%, transparent); color: white; }
+
+/* Headings carry the display face; its optical size tightens large titles.
+   Kept in the base layer so per-element tracking utilities still win. */
+@layer base {
+  h1, h2 { font-family: var(--font-display); font-optical-sizing: auto; letter-spacing: -0.025em; text-wrap: balance; }
+}
+:where(h1, h2).font-black { font-weight: 760; }
+
+/* Mono meta labels: slightly quieter tracking, never below legible contrast. */
+.font-mono { font-feature-settings: 'zero'; }
+.font-mono:is(.text-white\/28, .text-white\/30, .text-white\/35) { color: rgb(255 255 255 / .46); }
+:is(time, .rf-dock-progress, .rf-seek-preview) { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* Native vertical controls avoid rotated boxes overflowing adjacent bands.
+   The curve and visual rails exclude the same 16px native thumb travel. */
+.rf-eq-band { height: clamp(200px, 28dvh, 320px); }
+.rf-eq-band:focus-within { outline: 2px solid #ffffffa0; outline-offset: 3px; background: #ffffff09; }
+.rf-eq-slider { writing-mode: vertical-lr; direction: rtl; appearance: none; width: 44px; height: 100%; margin: 0; padding: 0; opacity: 0; cursor: ns-resize; touch-action: none; }
+.rf-eq-slider::-webkit-slider-runnable-track { width: 4px; height: 100%; }
+.rf-eq-slider::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; }
+
 /* Animate only the incoming page, never two glass surfaces simultaneously. */
-.rf-home-enter { animation: rf-home-arrive .22s cubic-bezier(.22,1,.36,1); }
-@keyframes rf-home-arrive { from { transform: translateY(6px); } to { transform: none; } }
+.rf-home-enter { animation: rf-home-arrive .32s cubic-bezier(.16,1,.3,1); }
+@keyframes rf-home-arrive { from { transform: translateY(10px); } to { transform: none; } }
 
 /* Lyrics share the glass UI's soft white light without adding another panel. */
 .rf-lyric-surface { isolation: isolate; overflow-anchor: none; scroll-behavior: auto; }
@@ -33,6 +78,23 @@
 .rf-dock-art { width: 48px; height: 48px; border-radius: 13px; overflow: hidden; display: grid; place-items: center; background: #ffffff14; flex-shrink: 0; box-shadow: 0 4px 14px #0004; }
 .rf-dock-art img, .rf-queue-cover img { width: 100%; height: 100%; object-fit: cover; }
 .rf-dock-controls, .rf-dock-tools { display: flex; align-items: center; gap: 6px; }
+/* Fit the controls, not a scroll viewport that clips artwork shadows. Geometry
+   follows resize immediately; only page/transport motion is animated. */
+.rf-player-primary { min-height: 0; overflow: visible; }
+.rf-player-artwork { box-shadow: 0 20px 52px -12px rgb(0 0 0 / .32), 0 4px 14px rgb(0 0 0 / .14); }
+@media (min-width: 768px) {
+  .rf-player-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 48px; }
+  .rf-player-primary { grid-column: 1; grid-row: 1; translate: 0 0; transition: translate .5s cubic-bezier(.16,1,.3,1); }
+  .rf-player-primary-centered { translate: calc(50% + 24px) 0; }
+  .rf-player-secondary { grid-column: 2; grid-row: 1; }
+  .rf-player-secondary-full { grid-column: 1 / -1; max-width: 56rem; justify-self: center; }
+  .rf-player-layout { padding-top: clamp(24px, 4dvh, 64px); padding-bottom: clamp(24px, 4dvh, 64px); }
+  .rf-player-primary { gap: clamp(16px, 2dvh, 32px); }
+  .rf-player-artwork { width: clamp(224px, calc(100dvh - 520px), 384px); height: clamp(224px, calc(100dvh - 520px), 384px); }
+}
+@media (min-width: 768px) and (max-height: 960px) {
+  .rf-player-controls { gap: 12px; flex-shrink: 0; }
+}
 .rf-dock-tools { justify-content: flex-end; }
 .rf-icon-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 34px; height: 34px; padding: 6px; border-radius: 11px; color: #ffffffb8; transition: background .18s, color .18s; flex-shrink: 0; }
 .rf-icon-button:hover, .rf-icon-button[aria-expanded='true'] { background: #ffffff21; color: white; }
@@ -43,17 +105,42 @@
 .rf-dock-progress > span:last-child { text-align: right; }
 .rf-slider-wrap { position: relative; width: 100%; height: 28px; display: flex; align-items: center; }
 .rf-slider { appearance: none; width: 100%; height: 28px; background: transparent; cursor: pointer; margin: 0; touch-action: none; }
-.rf-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 10px; background: linear-gradient(to right, #fff 0 var(--rf-progress), #ffffff2e var(--rf-progress) 100%); }
+.rf-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 10px; background: var(--rf-track, linear-gradient(to right, #fff 0 var(--rf-progress), #ffffff2e var(--rf-progress) 100%)); }
 .rf-slider::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; margin-top: -3.5px; background: white; border-radius: 50%; box-shadow: 0 1px 6px #0005; opacity: 0; transition: opacity .15s; }
 .rf-slider:hover::-webkit-slider-thumb, .rf-slider:focus-visible::-webkit-slider-thumb { opacity: 1; }
 .rf-slider:disabled { cursor: default; opacity: .35; }
 .rf-seek-preview { position: absolute; top: -24px; transform: translateX(-50%); background: #171e24; border: 1px solid #ffffff26; border-radius: 8px; padding: 4px 7px; color: white; font-size: 11px; pointer-events: none; z-index: 2; }
 .rf-volume-popover { position: absolute; bottom: 44px; right: -24px; width: 170px; padding: 14px 16px 6px; border-radius: 18px; }
-.rf-queue-popover { position: absolute; right: 24px; bottom: 126px; width: min(480px, calc(100vw - 48px)); height: min(520px, calc(100dvh - 220px)); border-radius: 28px; z-index: 99; overflow: hidden; }
+.rf-guide-layer { isolation: isolate; }
+.rf-guide-spotlight {
+  border: 2px dashed rgb(255 255 255 / .9);
+  border-radius: 20px;
+  background: rgb(255 255 255 / .055);
+  box-shadow: 0 0 0 9999px rgb(4 9 13 / .55), 0 0 24px rgb(255 255 255 / .18), inset 0 0 18px rgb(255 255 255 / .09);
+  transition: left .38s cubic-bezier(.16,1,.3,1), top .38s cubic-bezier(.16,1,.3,1), width .38s cubic-bezier(.16,1,.3,1), height .38s cubic-bezier(.16,1,.3,1);
+}
+.rf-guide-connector { overflow: visible; }
+.rf-guide-connector path { fill: none; stroke: rgb(255 255 255 / .8); stroke-width: 1.5; stroke-dasharray: 5 6; stroke-linecap: round; filter: drop-shadow(0 0 4px rgb(255 255 255 / .6)); }
+.rf-guide-popover {
+  border: 1px solid rgb(255 255 255 / .3);
+  background: linear-gradient(140deg, rgb(255 255 255 / .2), rgb(255 255 255 / .07) 42%, rgb(12 20 24 / .32)), rgb(24 34 38 / .66);
+  -webkit-backdrop-filter: blur(30px) saturate(155%);
+  backdrop-filter: blur(30px) saturate(155%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .25), 0 24px 64px rgb(0 0 0 / .42);
+  transition: left .38s cubic-bezier(.16,1,.3,1), top .38s cubic-bezier(.16,1,.3,1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rf-guide-spotlight, .rf-guide-popover { transition: none; }
+  .rf-guide-popover .transition-\[width\] { transition: none; }
+}
+.rf-queue-anchor { position: relative; flex-shrink: 0; }
+.rf-queue-popover { position: fixed; width: min(480px, calc(100vw - 120px)); height: min(520px, calc(100dvh - 230px)); border-radius: 28px; z-index: 101; overflow: hidden; transform-origin: bottom right; }
+.rf-queue-close { position: absolute; top: 8px; right: 8px; z-index: 2; }
+.rf-queue-popover .rf-queue-heading { padding-right: 30px; }
 .rf-queue { height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 22px 16px 12px; color: #ffffffde; }
 .rf-queue-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 6px 18px; }
 .rf-queue-list { flex: 1; min-height: 0; overflow-y: auto; }
-.rf-queue-row { display: flex; align-items: center; gap: 10px; padding: 10px 8px; border: 1px solid transparent; border-radius: 16px; content-visibility: auto; contain-intrinsic-size: auto 68px; }
+.rf-queue-row { display: flex; align-items: center; gap: 10px; height: 64px; box-sizing: border-box; padding: 10px 8px; border: 1px solid transparent; border-radius: 16px; content-visibility: auto; contain-intrinsic-size: auto 42px; }
 .rf-queue-row:hover { background: #ffffff09; }
 .rf-queue-row-active { background: #ffffff12; border-color: #ffffff14; }
 .rf-drop-target { border-top-color: #ffffffaa; }
@@ -63,12 +150,8 @@
 .rf-scroll { scrollbar-width: thin; scrollbar-color: #ffffff38 transparent; }
 .rf-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
 .rf-scroll::-webkit-scrollbar-thumb { border-radius: 8px; background: #ffffff38; }
-:where(button, input, [tabindex]):focus-visible { outline: 2px solid #ffffffd9; outline-offset: 3px; }
-.rf-library-row:focus, .rf-library-row:focus-within { background: #ffffff0d; }
+:where(button, input, [tabindex]):focus-visible { outline: 2px solid var(--rf-accent-soft); outline-offset: 3px; }
 .rf-library-panel.rf-glass { background: linear-gradient(145deg, #ffffff0b, #ffffff03 50%), rgb(10 15 18 / .30); backdrop-filter: blur(18px) saturate(125%); }
-.rf-library-row { grid-template-columns: 3rem minmax(0, 1.6fr) minmax(70px, 1fr) 3.5rem auto; }
-.rf-library-row button[title='Play'], .rf-library-row button[title='Remove'] { width: 34px; height: 34px; }
-@media (max-width: 1100px) { .rf-library-row { grid-template-columns: 3rem minmax(0, 1.5fr) minmax(60px, 1fr) auto; } .rf-library-row > div:nth-of-type(3) { display: none; } }
 @media (max-width: 1100px) {
   .rf-sidebar { width: 210px !important; }
   .rf-sidebar-brand { display: none; }
@@ -161,13 +244,17 @@ body {
 .rf-library-panel.rf-glass, .rf-sidebar.rf-glass { position: relative; }
 .rf-library-panel.rf-glass > *, .rf-sidebar.rf-glass > * { position: relative; z-index: 1; }
 .rf-library-panel.rf-glass::before, .rf-sidebar.rf-glass::before { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; backdrop-filter: blur(var(--rf-card-blur, 72px)) saturate(145%); -webkit-backdrop-filter: blur(var(--rf-card-blur, 72px)) saturate(145%); }
+/* A backdrop-filter on the dock itself would trap its popup's backdrop sampling. */
+.rf-player-dock.rf-glass { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+.rf-player-dock::before { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; backdrop-filter: blur(var(--rf-card-blur, 72px)) saturate(145%); -webkit-backdrop-filter: blur(var(--rf-card-blur, 72px)) saturate(145%); }
+.rf-player-dock > * { position: relative; z-index: 1; }
 .rf-glass { background: linear-gradient(135deg, #ffffff14, #ffffff03 48%, #ffffff09), rgb(14 19 23 / .40); }
 .rf-library-panel.rf-glass { background: linear-gradient(145deg, #ffffff08, #ffffff02 50%), rgb(10 15 18 / .16); }
 .home-glass-card { background: linear-gradient(135deg, #ffffff14, #ffffff05 46%, #0808081a), rgb(12 12 12 / .14); }
 .home-glass-card-interactive:hover { background: linear-gradient(135deg, #ffffff1f, #ffffff09 46%, #0808081f), rgb(18 18 18 / .20); }
 .customizable-backdrop-medium.rounded-4xl { background-color: rgb(0 0 0 / .09); }
 @media (prefers-reduced-transparency: reduce) {
-  .rf-library-panel.rf-glass::before, .rf-sidebar.rf-glass::before { display: none; }
+  .rf-library-panel.rf-glass::before, .rf-sidebar.rf-glass::before, .rf-player-dock::before { display: none; }
   :is(.rf-glass, .home-glass-card, .customizable-backdrop-soft, .customizable-backdrop-medium, .customizable-backdrop-strong) {
     background: #171e24 !important;
     -webkit-backdrop-filter: none !important;
@@ -203,30 +290,244 @@ body {
   will-change: transform;
 }
 
-/* Marquee scrolling text — used for song title that may overflow */
-@keyframes marquee-scroll {
-  0%      { transform: translateX(0); opacity: 1; filter: blur(0px); }
-  /* Hold at start */
-  15%     { transform: translateX(0); opacity: 1; filter: blur(0px); }
-  /* Scroll to end */
-  72%     { transform: translateX(var(--marquee-distance, -60%)); opacity: 1; filter: blur(0px); }
-  /* Blur + fade out at end (~0.7s) */
-  77%     { transform: translateX(var(--marquee-distance, -60%)); opacity: 0; filter: blur(8px); }
-  /* Snap back to start while invisible */
-  78%     { transform: translateX(0); opacity: 0; filter: blur(8px); }
-  /* Blur + fade in at start (~0.7s) */
-  83%     { transform: translateX(0); opacity: 1; filter: blur(0px); }
-  /* Hold at start before next cycle */
-  100%    { transform: translateX(0); opacity: 1; filter: blur(0px); }
+/* ---- Stylistic layer: accent, tactility, lyric typography, atmosphere ---- */
+
+/* Lyrics read as display type; the sung halo picks up the artwork hue. */
+.rf-lyric-text { font-family: var(--font-display); font-optical-sizing: auto; font-weight: 700; letter-spacing: -0.02em; text-wrap: pretty; }
+.rf-lyric-translation { font-family: var(--font-sans); font-weight: 450; letter-spacing: 0; }
+.rf-lyric-word-glow { color: var(--rf-accent-soft); }
+
+/* Transport: tactile press states and an accent halo on the primary action. */
+.rf-icon-button { transition: background .18s, color .18s, transform .18s var(--rf-ease-out); }
+.rf-icon-button:active:not(:disabled) { transform: scale(.92); }
+.rf-play-button { box-shadow: inset 0 1px 0 white, 0 3px 12px #0003, 0 0 0 0 var(--rf-accent-glow); transition: transform .18s var(--rf-ease-out), box-shadow .3s; }
+.rf-play-button:hover:not(:disabled) { box-shadow: inset 0 1px 0 white, 0 6px 18px #0004, 0 0 0 6px var(--rf-accent-glow); }
+.rf-play-button:active:not(:disabled) { transform: scale(.95); }
+.rf-slider:hover::-webkit-slider-thumb, .rf-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--rf-accent-glow), 0 1px 6px #0005; }
+.rf-seek-preview { background: rgb(14 19 23 / .92); border-color: color-mix(in oklch, var(--rf-accent) 40%, #ffffff26); }
+
+/* Dock: a hairline of accent light along the top edge. */
+.rf-player-dock { border-top-color: color-mix(in oklch, var(--rf-accent) 35%, #ffffff40); }
+.rf-dock-art { outline: 1px solid #ffffff1a; outline-offset: -1px; }
+
+/* Queue & library rows: the active track is marked by an accent rail. */
+.rf-queue-row { transition: background .18s, border-color .18s; }
+.rf-queue-row-active { box-shadow: inset 3px 0 0 var(--rf-accent-soft); }
+
+/* Film grain keeps large glass fields from looking flat (skipped when transparent). */
+.rf-backdrop::after {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: .06; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+@media (prefers-reduced-transparency: reduce) { .rf-backdrop::after { display: none; } }
+
+/* Song rows: index | cover | title+artist | album | duration | actions. */
+.rf-library-row {
+  display: grid; align-items: center; column-gap: 14px; height: 64px; padding: 0 10px 0 6px;
+  grid-template-columns: 2.25rem 2.75rem minmax(0, 1.7fr) minmax(0, 1fr) 3.25rem auto;
+  border: 1px solid transparent; border-radius: 16px; transition: background .18s, border-color .18s;
+}
+.rf-library-row:hover, .rf-library-row:focus-within { background: #ffffff0b; }
+.rf-library-row:focus-visible { background: #ffffff10; outline-offset: -2px; }
+.rf-library-row-active { background: color-mix(in oklch, var(--rf-accent) 12%, #ffffff0a); border-color: #ffffff14; }
+.rf-row-index { display: grid; place-items: center; font: 500 12px/1 var(--font-mono); color: #ffffff59; font-variant-numeric: tabular-nums; }
+.rf-row-cover { position: relative; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 10px; overflow: hidden; background: #ffffff0d; box-shadow: 0 4px 12px #0003; outline: 1px solid #ffffff14; outline-offset: -1px; }
+.rf-row-cover img { width: 100%; height: 100%; object-fit: cover; }
+.rf-row-cover-play { position: absolute; inset: 0; display: grid; place-items: center; background: #0008; color: white; opacity: 0; transition: opacity .18s; }
+.rf-library-row:hover .rf-row-cover-play, .rf-row-cover:focus-visible .rf-row-cover-play { opacity: 1; }
+.rf-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; color: #ffffffe6; }
+.rf-library-row-active .rf-row-title { color: white; font-weight: 600; }
+.rf-row-sub { display: block; max-width: 100%; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: 12px; color: #ffffff80; transition: color .15s; }
+.rf-row-album { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #ffffff73; }
+.rf-row-duration { text-align: right; font: 400 12px/1 var(--font-mono); color: #ffffff73; font-variant-numeric: tabular-nums; }
+.rf-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+@media (hover: hover) {
+  .rf-row-actions > * { opacity: .5; transition: opacity .15s, background .18s, color .18s, transform .18s var(--rf-ease-out); }
+  .rf-library-row:is(:hover, :focus-within) .rf-row-actions > *, .rf-row-actions > .rf-row-action-on { opacity: 1; }
+}
+@media (max-width: 1100px) {
+  .rf-library-row { grid-template-columns: 2.25rem 2.75rem minmax(0, 1fr) 3.25rem auto; }
+  .rf-row-album { display: none; }
 }
 
-@utility marquee-container {
-  overflow: hidden;
-  white-space: nowrap;
-}
+/* Now-playing bars: compositor-only scaleY, frozen while paused. */
+.rf-now-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+.rf-now-bars i { width: 3px; height: 100%; border-radius: 2px; background: var(--rf-accent-soft); transform-origin: bottom; animation: rf-now-bar 1s ease-in-out infinite alternate; }
+.rf-now-bars i:nth-child(2) { animation-duration: .72s; animation-delay: -.3s; }
+.rf-now-bars i:nth-child(3) { animation-duration: .88s; animation-delay: -.55s; }
+@keyframes rf-now-bar { from { transform: scaleY(.25); } to { transform: scaleY(1); } }
+[data-playing='false'] .rf-now-bars i { animation-play-state: paused; }
 
-@utility marquee-text {
-  display: inline-block;
-  animation: marquee-scroll 14s linear infinite;
-  will-change: transform;
+/* Segmented control (grid/list etc.). */
+.rf-segmented { display: inline-flex; gap: 2px; padding: 4px; border-radius: 16px; background: #ffffff0d; border: 1px solid #ffffff17; }
+.rf-segmented-item { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 14px; border-radius: 12px; font-size: 13px; font-weight: 500; color: #ffffffa6; transition: background .2s, color .2s, box-shadow .2s; }
+.rf-segmented-item:hover { color: white; background: #ffffff0f; }
+.rf-segmented-item[aria-checked='true'] { color: #111; background: white; box-shadow: 0 2px 10px #0003; }
+
+/* CJK UI faces only ship Regular/Bold, so 600 renders as heavy Bold.
+   Small UI text keeps Latin at 500 and CJK at Regular for a lighter read. */
+:is(.text-xs, .text-sm, .text-\[11px\], .text-\[13px\]).font-semibold { font-weight: 500; }
+
+/* Streamer background blobs (paths come from Background.tsx custom properties). */
+.rf-blob { will-change: transform; animation: rf-blob-drift 60s ease-in-out infinite; }
+@keyframes rf-blob-drift {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  25% { transform: translate3d(var(--bx1), var(--by1), 0); }
+  50% { transform: translate3d(var(--bx2), var(--by2), 0); }
+  75% { transform: translate3d(var(--bx3), var(--by3), 0); }
 }
+@media (prefers-reduced-motion: reduce) { .rf-blob { animation: none; } }
+
+/* Player artwork sits on a soft pool of its own colour. */
+.rf-player-artwork { box-shadow: 0 20px 52px -12px rgb(0 0 0 / .32), 0 4px 14px rgb(0 0 0 / .14), 0 40px 110px -30px var(--rf-accent-glow); transition: box-shadow .8s; }
+
+/* Dock lyric: one centred line under the progress bar, sharing the main
+   player's word fill. Lines overlap while they blur across. */
+.rf-mini-lyric { position: relative; height: 26px; margin: 2px 0 4px; overflow: hidden; mask-image: linear-gradient(to right, transparent, #000 6%, #000 94%, transparent); }
+.rf-mini-lyric-line { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; white-space: nowrap; font-family: var(--font-display); font-size: 14px; font-weight: 650; letter-spacing: -0.005em; }
+.rf-mini-lyric-line .rf-lyric-word { color: #ffffff6b; }
+.rf-mini-lyric-line .rf-lyric-word:is([data-fill='partial'], [data-fill='full']) { transform: translateY(-1px); }
+.rf-mini-lyric-plain { color: #ffffffd9; overflow: hidden; text-overflow: ellipsis; }
+.rf-mini-lyric-interlude { color: #ffffff4d; letter-spacing: .2em; font-size: 11px; }
+
+/* ---- Home shell: title bar, sidebar ---- */
+.rf-chrome-button { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px; border-radius: 11px; font-size: 13px; font-weight: 500; color: #ffffffb3; border: 1px solid transparent; transition: background .18s, color .18s, border-color .18s, transform .18s var(--rf-ease-out); }
+.rf-chrome-button:hover { background: #ffffff12; color: white; }
+.rf-chrome-button:active { transform: scale(.96); }
+.rf-chrome-button[aria-pressed='true'] { background: #ffffff1c; border-color: #ffffff24; color: white; box-shadow: inset 0 1px 0 #ffffff1a; }
+.rf-chrome-button[aria-pressed='true'] svg { color: var(--rf-accent-soft); }
+
+.rf-segmented-block { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; width: 100%; }
+.rf-segmented-block .rf-segmented-item { justify-content: center; }
+.rf-segmented-item[aria-pressed='true'] { color: #111; background: white; box-shadow: 0 2px 10px #0003; }
+.rf-segmented-item:disabled { opacity: .6; }
+
+.rf-side-label.p-0 { padding: 0; }
+.rf-side-label { padding: 0 12px 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: #ffffff73; }
+.rf-side-item, .rf-side-playlist {
+  position: relative; display: flex; align-items: center; gap: 12px; width: 100%; border-radius: 12px;
+  color: #ffffffb3; transition: background .18s, color .18s;
+}
+.rf-side-item { height: 38px; padding: 0 12px; font-size: 14px; font-weight: 500; }
+.rf-side-item svg { width: 18px; height: 18px; flex-shrink: 0; opacity: .85; }
+.rf-side-playlist { padding: 6px 8px 6px 6px; }
+.rf-side-item:hover, .rf-side-playlist:hover { background: #ffffff0d; color: white; }
+.rf-side-item-active, .rf-side-item-active:hover { background: #ffffff17; color: white; box-shadow: inset 0 1px 0 #ffffff12; }
+.rf-side-item-active::before { content: ''; position: absolute; left: 0; top: 9px; bottom: 9px; width: 3px; border-radius: 0 3px 3px 0; background: var(--rf-accent-soft); }
+.rf-side-item-active svg { opacity: 1; color: var(--rf-accent-soft); }
+.rf-side-thumb { width: 38px; height: 38px; flex-shrink: 0; display: grid; place-items: center; overflow: hidden; border-radius: 9px; background: linear-gradient(145deg, #ffffff1f, #ffffff08); color: #ffffff80; outline: 1px solid #ffffff12; outline-offset: -1px; }
+.rf-side-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.rf-side-empty { display: flex; align-items: flex-start; gap: 10px; margin: 4px 0; padding: 12px; border-radius: 14px; border: 1px dashed #ffffff1f; font-size: 12px; line-height: 1.5; color: #ffffff80; }
+
+/* ---- Library page ---- */
+.rf-page-title { font-family: var(--font-display); font-size: clamp(1.9rem, 1.2rem + 1.6vw, 2.6rem); font-weight: 760; letter-spacing: -0.03em; line-height: 1.1; color: white; }
+.rf-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px; border: 1px solid #ffffff1c; background: #ffffff0d; font-size: 11px; font-weight: 500; color: #ffffffa6; }
+.rf-search-compact { background: #ffffff0f !important; border-color: #ffffff1a !important; }
+.rf-search-compact:focus { background: #ffffff17 !important; border-color: color-mix(in oklch, var(--rf-accent) 40%, #ffffff33) !important; box-shadow: 0 0 0 3px var(--rf-accent-glow); }
+/* Scroll edges fade via mask: no per-frame backdrop blur while scrolling. */
+@property --fade-top { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@property --fade-bottom { syntax: '<length>'; inherits: false; initial-value: 0px; }
+.rf-scroll-fade { --fade-top: 0px; --fade-bottom: 0px; mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent 100%); transition: --fade-top .2s, --fade-bottom .2s; }
+.rf-scroll-fade[data-fade-top] { --fade-top: 40px; }
+.rf-scroll-fade[data-fade-bottom] { --fade-bottom: 56px; }
+
+/* Cover grid (playlists overview). */
+.rf-cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(164px, 1fr)); gap: 6px; }
+.rf-cover-card { position: relative; display: block; min-width: 0; padding: 10px; border-radius: 22px; transition: background .2s; }
+.rf-cover-card:hover { background: #ffffff0b; }
+.rf-cover-card-art { position: relative; display: block; border-radius: 1.1rem; box-shadow: 0 14px 34px -14px #000a; }
+.rf-cover-card-play { position: absolute; right: 10px; bottom: 10px; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; color: #111; background: white; box-shadow: 0 8px 22px #0006; opacity: 0; transform: translateY(6px); transition: opacity .2s, transform .25s var(--rf-ease-out); }
+.rf-cover-card:is(:hover, :focus-visible) .rf-cover-card-play { opacity: 1; transform: none; }
+
+/* Collection hero (playlist detail). */
+.rf-hero { display: flex; align-items: flex-end; gap: 24px; }
+.rf-hero > div:first-child { box-shadow: 0 24px 60px -18px #000c, 0 0 0 1px #ffffff14; }
+.rf-hero-kicker { font-size: 12px; font-weight: 600; letter-spacing: .08em; color: #ffffff8c; }
+.rf-hero-title { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: clamp(1.8rem, 1rem + 2vw, 3rem); font-weight: 780; letter-spacing: -0.035em; line-height: 1.1; color: white; }
+.rf-primary-button { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 20px 0 16px; border-radius: 999px; font-size: 14px; font-weight: 600; color: #111; background: white; box-shadow: 0 8px 24px -8px #000a, 0 0 0 0 var(--rf-accent-glow); transition: transform .18s var(--rf-ease-out), box-shadow .3s; }
+.rf-primary-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 12px 28px -8px #000a, 0 0 0 5px var(--rf-accent-glow); }
+.rf-primary-button:active:not(:disabled) { transform: scale(.97); }
+.rf-primary-button:disabled { opacity: .4; }
+@media (max-width: 767px) { .rf-hero { align-items: flex-start; } }
+
+/* Skeleton rows. */
+.rf-skeleton-row { display: flex; align-items: center; gap: 14px; height: 64px; padding: 0 10px; }
+.rf-skeleton { position: relative; overflow: hidden; display: inline-block; border-radius: 6px; background: #ffffff10; }
+.rf-skeleton::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, #ffffff14, transparent); transform: translateX(-100%); animation: rf-shimmer 1.4s ease-in-out infinite; }
+@keyframes rf-shimmer { to { transform: translateX(100%); } }
+.rf-side-label { font-size: 12px; font-weight: 500; letter-spacing: .02em; }
+/* At dock size the glow reads as a caret; keep only a faint wide halo. */
+.rf-mini-lyric .rf-lyric-word-glow { filter: blur(.35em); opacity: calc(var(--lyric-glow, 0) * .35); }
+
+/* Section labels and keyword pills (search page). */
+.rf-section-label { margin-bottom: 4px; font-size: 13px; font-weight: 600; color: #ffffffb3; }
+.rf-pill { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px 0 6px; border-radius: 999px; border: 1px solid #ffffff17; background: #ffffff0b; font-size: 13px; color: #ffffffd9; transition: background .18s, border-color .18s, transform .18s var(--rf-ease-out); }
+.rf-pill:hover { background: #ffffff17; border-color: #ffffff2b; color: white; }
+.rf-pill:active { transform: scale(.97); }
+.rf-pill-rank { display: grid; place-items: center; min-width: 22px; height: 22px; border-radius: 999px; background: #ffffff14; font: 600 11px/1 var(--font-mono); color: #ffffffa6; }
+.rf-pill:nth-of-type(-n+3) .rf-pill-rank { background: var(--rf-accent-soft); color: #111; }
+
+/* Grid artwork: static shadow, lift on hover via transform only. */
+.rf-card-art { box-shadow: 0 14px 34px -16px #000b; transition: transform .35s var(--rf-ease-out); }
+.group:hover > button > .rf-card-art, .group:hover .rf-card-art { transform: translateY(-3px); }
+.rf-ghost-button { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px; border-radius: 999px; border: 1px solid #ffffff1f; background: #ffffff0d; font-size: 14px; font-weight: 500; color: #ffffffd9; transition: background .18s, border-color .18s, transform .18s var(--rf-ease-out); }
+.rf-ghost-button:hover { background: #ffffff1a; border-color: #ffffff33; color: white; }
+.rf-ghost-button:active { transform: scale(.97); }
+.rf-segmented { flex-shrink: 0; }
+.rf-segmented-item { white-space: nowrap; }
+.rf-sidebar .rf-segmented-item { padding: 0 8px; gap: 6px; }
+@media (max-width: 1100px) { .rf-sidebar .rf-segmented-item svg { display: none; } }
+
+/* Compact dock: the status line only takes space while it has a message. */
+.rf-player-dock { padding-bottom: 8px; }
+.rf-mini-lyric { height: 22px; margin: 0; }
+.rf-dock-progress .rf-slider-wrap, .rf-dock-progress .rf-slider { height: 22px; }
+.rf-sidebar .rf-side-playlist, .rf-sidebar .rf-side-item { min-width: 0; }
+
+/* Dock rows have fixed heights, so the dock keeps one size in every state. */
+.rf-dock-row { height: 48px; }
+.rf-dock-progress { height: 22px; }
+.rf-dock-meta { position: relative; height: 22px; overflow: hidden; }
+.rf-dock-meta > [role='status'] { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; height: auto; }
+.rf-dock-meta > [role='status']:empty { pointer-events: none; }
+.rf-dock-meta .rf-mini-lyric { transition: opacity .25s, filter .25s; }
+.rf-dock-meta:has(> [role='status']:not(:empty)) .rf-mini-lyric { opacity: 0; filter: blur(4px); }
+@media (max-width: 700px) { .rf-dock-row { height: 38px; } }
+
+/* ---- Desktop lyrics overlay (separate transparent window) ---- */
+html[data-surface='desktop-lyrics'], html[data-surface='desktop-lyrics'] body { background: transparent; user-select: none; }
+.rf-dl { --dl-size: calc(34px * var(--dl-scale, 1)); position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: flex-end; padding: 12px 28px 16px; border-radius: 22px; -webkit-app-region: drag; transition: background .25s, box-shadow .25s; }
+.rf-dl[data-locked='true'] { -webkit-app-region: no-drag; }
+.rf-dl[data-hovered='true'][data-locked='false'] { background: rgb(12 16 20 / .42); box-shadow: inset 0 0 0 1px #ffffff24; }
+/* Two fixed rows (1.32em each, .12em gap); lines are positioned by transform. */
+.rf-dl-stage { position: relative; width: 100%; height: calc(var(--dl-size) * 2.76); }
+.rf-dl-line { position: absolute; top: 0; left: 0; right: 0; height: calc(var(--dl-size) * 1.32); will-change: transform, opacity, filter; }
+.rf-dl-fit { display: flex; width: 100%; height: 100%; align-items: center; }
+.rf-dl-fit[data-align='start'] { justify-content: flex-start; }
+.rf-dl-fit[data-align='center'] { justify-content: center; text-align: center; }
+.rf-dl-fit[data-align='end'] { justify-content: flex-end; text-align: right; }
+.rf-dl-fit-inner { display: inline-block; flex-shrink: 0; white-space: nowrap; transform-origin: left center; }
+.rf-dl-fit[data-align='center'] .rf-dl-fit-inner { transform-origin: center; }
+.rf-dl-fit[data-align='end'] .rf-dl-fit-inner { transform-origin: right center; }
+
+/* Same palette as the main player (dim white -> white); one soft flat shadow
+   only keeps the text readable over bright desktops. */
+.rf-dl-line { font-family: var(--font-display); font-size: var(--dl-size); font-weight: 760; letter-spacing: 0; line-height: 1.3; color: #fffffff2; text-shadow: 0 1px 3px rgb(0 0 0 / .35); }
+.rf-dl-line:not(.is-active):not(.is-translation) { color: #ffffff8c; }
+.rf-dl-line.is-translation { font-family: var(--font-sans); font-size: calc(var(--dl-size) * .58); font-weight: 600; color: rgb(255 255 255 / .9); height: calc(var(--dl-size) * 1.32); }
+.rf-dl-line .rf-lyric-word { color: #ffffff8c; transition: none; }
+.rf-dl-line .rf-lyric-word:is([data-fill='partial'], [data-fill='full']) { transform: none; }
+/* Sung part: solid white like the main player, with a soft leading edge. */
+.rf-dl-line .rf-lyric-word-fill { color: #fff; text-shadow: none;
+  mask-image: linear-gradient(to right, #000 calc(var(--lyric-fill, 0%) - 12%), transparent calc(var(--lyric-fill, 0%) + 12%)); }
+.rf-dl-line .rf-lyric-word[data-fill='full'] .rf-lyric-word-fill { mask-image: none; }
+.rf-dl-line .rf-lyric-word-glow { filter: blur(.12em); opacity: calc(var(--lyric-glow, 0) * .8); }
+
+.rf-dl-toolbar { position: absolute; top: 10px; left: 50%; z-index: 2; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 14px; background: rgb(16 20 24 / .78); box-shadow: 0 8px 24px #0006, inset 0 0 0 1px #ffffff1f; translate: -50% -6px; opacity: 0; pointer-events: none; transition: opacity .2s, translate .25s var(--rf-ease-out); -webkit-app-region: no-drag; }
+.rf-dl-toolbar.is-visible { opacity: 1; translate: -50% 0; pointer-events: auto; }
+.rf-dl-toolbar button, .rf-dl-unlock { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: #ffffffd9; transition: background .15s, color .15s; -webkit-app-region: no-drag; }
+.rf-dl-toolbar button:hover, .rf-dl-unlock:hover { background: #ffffff1f; color: white; }
+.rf-dl-toolbar button:disabled { opacity: .35; }
+.rf-dl-divider { width: 1px; height: 18px; margin: 0 4px; background: #ffffff26; }
+.rf-dl-unlock { position: absolute; top: 10px; right: 14px; z-index: 2; background: rgb(16 20 24 / .7); box-shadow: inset 0 0 0 1px #ffffff1f; opacity: 0; transition: opacity .2s; }
+.rf-dl-unlock.is-visible { opacity: 1; }
