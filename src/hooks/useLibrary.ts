@@ -5,6 +5,8 @@ interface RefreshLibraryOptions {
   forceRefresh?: boolean;
 }
 
+// Convert the server payload into the renderer Song shape once so the rest of
+// the UI does not depend on transport-only fields.
 const toSongs = (tracks: LibrarySongPayload[]): Song[] => tracks.map((track) => ({
   title: track.title,
   artist: track.artist,
@@ -15,19 +17,26 @@ const toSongs = (tracks: LibrarySongPayload[]): Song[] => tracks.map((track) => 
   file: track.fileUrl,
 }));
 
+// Renderer-side library orchestration: load the current folder, allow explicit
+// refresh, and expose platform-assisted folder actions through IPC.
 export function useLibrary(ipc: any) {
   const [librarySongs, setLibrarySongs] = useState<Song[]>([]);
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
   const [hasLoadedLibrary, setHasLoadedLibrary] = useState(false);
   const [musicFolder, setMusicFolder] = useState<string | null>(null);
   const hasInitializedRef = useRef(false);
+  const requestRef = useRef(0);
 
+  // Shared write path for both the initial bootstrap request and later refreshes.
   const applyLibraryPayload = useCallback((tracks: LibrarySongPayload[], folderOverride?: string | null) => {
     setLibrarySongs(toSongs(tracks));
     setMusicFolder(folderOverride ?? null);
   }, []);
 
+  // The force-refresh flag tells the server to bypass its persisted cache and
+  // rescan the selected music directory.
   const refreshLibrary = useCallback(async (options: RefreshLibraryOptions = {}) => {
+    const requestId = ++requestRef.current;
     setIsLoadingLibrary(true);
     try {
       const requestUrl = options.forceRefresh ? '/api/music?refresh=1' : '/api/music';
@@ -40,15 +49,29 @@ export function useLibrary(ipc: any) {
       const tracks = Array.isArray(payload.songs) ? payload.songs : [];
       const nextFolder = typeof payload.folder === 'string' ? payload.folder : null;
 
+      if (requestId !== requestRef.current) return;
       applyLibraryPayload(tracks, nextFolder);
+      setIsLoadingLibrary(false);
+      setHasLoadedLibrary(true);
+      if (!options.forceRefresh) {
+        const refreshed = await fetch('/api/music?refresh=1');
+        if (refreshed.ok) {
+          const fresh = await refreshed.json() as { folder?: string; songs?: LibrarySongPayload[] };
+          if (requestId === requestRef.current && Array.isArray(fresh.songs)) applyLibraryPayload(fresh.songs, fresh.folder);
+        }
+      }
     } catch (error) {
       console.error('Failed to fetch library:', error);
     } finally {
-      setIsLoadingLibrary(false);
-      setHasLoadedLibrary(true);
+      if (requestId === requestRef.current) {
+        setIsLoadingLibrary(false);
+        setHasLoadedLibrary(true);
+      }
     }
   }, [applyLibraryPayload]);
 
+  // Folder picking is delegated to Electron, then mirrored back into the HTTP
+  // server's active music directory before refreshing the library payload.
   const selectFolder = useCallback(async () => {
     if (!ipc) return;
 
@@ -72,11 +95,13 @@ export function useLibrary(ipc: any) {
     }
   }, [ipc, refreshLibrary]);
 
+  // Opening the current music folder remains a platform capability, not a UI concern.
   const openFolder = useCallback(() => {
     if (!ipc) return;
     ipc.invoke('open-music-folder', musicFolder);
   }, [ipc, musicFolder]);
 
+  // Initialize exactly once even if React mounts effects more than once during development.
   useEffect(() => {
     if (hasInitializedRef.current) {
       return;

@@ -1,9 +1,11 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, nativeImage, screen } from 'electron';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs';
 import os from 'os';
 
+// Electron main process: owns the native shell, window lifecycle, IPC bridge,
+// and the packaged local HTTP server used by the production build.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const APP_NAME = 'RadiFlow Player';
@@ -16,9 +18,31 @@ const DEFAULT_WINDOW_BACKGROUND_COLOR = '#050505';
 const TRANSPARENT_WINDOW_BACKGROUND_COLOR = '#00000000';
 const SHELL_PREFERENCES_FILE_NAME = 'shell-preferences.json';
 
+function resolvePortableExecutableDir() {
+  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
+  return typeof portableDir === 'string' && portableDir.trim() ? portableDir.trim() : null;
+}
+
+function getDefaultMusicPath() {
+  if (!app.isPackaged) {
+    return path.join(process.cwd(), 'music');
+  }
+
+  const packagedBaseDir = resolvePortableExecutableDir() || path.dirname(process.execPath);
+  return path.join(packagedBaseDir, 'music');
+}
+
 let mainWindow;
 let tray;
-let musicPath = path.join(process.cwd(), 'music');
+let desktopLyricsWindow = null;
+let desktopLyricsLocked = false;
+// Last payloads from the player, replayed when the lyrics window (re)opens.
+const desktopLyricsCache = { track: null, clock: null };
+const DESKTOP_LYRICS_CONTROLS = new Set(['toggle-play', 'next', 'prev']);
+const DESKTOP_LYRICS_WIDTH = 960;
+const DESKTOP_LYRICS_HEIGHT = 200;
+const DESKTOP_LYRICS_BOTTOM_GAP = 56;
+let musicPath = getDefaultMusicPath();
 let packagedServer;
 let packagedServerUrl;
 const startUrl = process.env.ELECTRON_START_URL;
@@ -26,6 +50,8 @@ const isDev = !app.isPackaged;
 const shouldOpenDevTools = isDev && process.env.ELECTRON_DISABLE_DEVTOOLS !== 'true' && !startUrl;
 const customUserDataPath = process.env.ELECTRON_USER_DATA_DIR;
 
+// Resolve the best available application icon once at startup so tray, window,
+// and installer builds stay visually consistent without duplicating lookup logic.
 const resolveAppIcon = () => {
   const iconCandidates = [
     path.join(__dirname, 'logo.ico'),
@@ -54,6 +80,8 @@ const THUMBAR_ICON_PAUSE  = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAHkl
 const THUMBAR_ICON_PREV   = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAASklEQVR4nOXQQQoAIAhEUe9/aduGiM04RVB/rQ/R7O98itnZAkKzKOghCYxYG8ygNlhhNLjCKBDB7l545IcI2gIrWAIzVAbZ2ccbRwXyHOtSMyYAAAAASUVORK5CYII=';
 const THUMBAR_ICON_NEXT   = 'iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAASklEQVR4nGNgGAX/gYBYdTBAlEKqG0hIIVkG4lNMtoG4NFFsILpGqhiIrJlqBhJy+cC6EJc6sgzEp44kA4lRR7SB1FBH/bw8/AEA5YzCTPEG4HoAAAAASUVORK5CYII=';
 
+// Windows taskbar controls are a shell-only concern, so they stay in main.js
+// and are updated from renderer playback state via IPC.
 function updateThumbarButtons(isPlaying, hasActiveSong) {
   if (!mainWindow || process.platform !== 'win32') return;
   const flags = hasActiveSong ? [] : ['disabled'];
@@ -93,13 +121,20 @@ if (customUserDataPath) {
   app.setPath('userData', customUserDataPath);
 }
 
+// Shell preferences are app-level state and intentionally live under userData
+// so they survive restarts independently of the selected music library.
 function getShellPreferencesPath() {
   return path.join(app.getPath('userData'), SHELL_PREFERENCES_FILE_NAME);
 }
 
 function normalizeShellPreferences(value) {
+  const musicDirectory = typeof value?.musicDirectory === 'string' && value.musicDirectory.trim()
+    ? value.musicDirectory.trim()
+    : null;
+
   return {
     transparentWindow: Boolean(value?.transparentWindow),
+    musicDirectory,
   };
 }
 
@@ -121,7 +156,12 @@ function writeShellPreferences(value) {
 }
 
 let shellPreferences = readShellPreferences();
+musicPath = shellPreferences.musicDirectory && fs.existsSync(shellPreferences.musicDirectory)
+  ? shellPreferences.musicDirectory
+  : getDefaultMusicPath();
 
+// Windows 11 material APIs are version-gated; the renderer asks for support
+// information, but main.js is the only place that can safely decide and apply it.
 function getBackgroundMaterialSupport() {
   const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : os.release();
   const buildSegment = systemVersion.split('.').at(-1) ?? '0';
@@ -177,6 +217,8 @@ function setWindowBackgroundMaterial(mode = 'none') {
   }
 }
 
+// Frameless rounded corners on Windows are emulated by shaping the native window.
+// The shape is rebuilt on resize / maximize transitions so the shell matches the UI.
 function buildRoundedWindowShape(width, height, radius) {
   const safeWidth = Math.max(1, Math.floor(width));
   const safeHeight = Math.max(1, Math.floor(height));
@@ -223,6 +265,8 @@ const PACKAGED_SERVER_PREFERRED_PORT = 37531;
 const PACKAGED_SERVER_PORT_RANGE = 20;
 const PACKAGED_SERVER_PORT_FILE = 'server-port.json';
 
+// Persist the last successful packaged server port so the production app can
+// reuse a stable origin and keep localStorage-backed preferences available.
 function readPackagedServerPort() {
   try {
     const raw = fs.readFileSync(path.join(app.getPath('userData'), PACKAGED_SERVER_PORT_FILE), 'utf8');
@@ -242,6 +286,8 @@ function writePackagedServerPort(port) {
   }
 }
 
+// Production builds serve the renderer from a local HTTP server started here.
+// The retry loop favors deterministic ports first, then falls back to a random port.
 async function startPackagedLocalServer() {
   if (packagedServerUrl) {
     return packagedServerUrl;
@@ -295,6 +341,18 @@ async function startPackagedLocalServer() {
   throw lastError ?? new Error('Could not find an available port for the packaged server.');
 }
 
+// Both windows load the same renderer bundle; the hash selects the surface.
+function loadRenderer(window, hash = '') {
+  const baseUrl = startUrl || (isDev ? 'http://localhost:3000' : packagedServerUrl);
+  if (baseUrl) {
+    window.loadURL(hash ? `${baseUrl}#${hash}` : baseUrl);
+  } else {
+    window.loadFile(path.join(__dirname, 'dist/index.html'), hash ? { hash } : undefined);
+  }
+}
+
+// Window creation stays focused on native shell concerns only: startup URL
+// selection, frameless chrome behavior, and shell-specific event forwarding.
 function createWindow() {
   const useTransparentWindow = shellPreferences.transparentWindow;
 
@@ -320,15 +378,7 @@ function createWindow() {
     },
   });
 
-  if (startUrl) {
-    mainWindow.loadURL(startUrl);
-  } else if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
-  } else if (packagedServerUrl) {
-    mainWindow.loadURL(packagedServerUrl);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, 'dist/index.html'));
-  }
+  loadRenderer(mainWindow);
 
   if (shouldOpenDevTools) {
     mainWindow.webContents.openDevTools();
@@ -348,6 +398,8 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // The lyrics overlay must not keep the app alive without its player.
+    desktopLyricsWindow?.destroy();
   });
 
   mainWindow.on('resize', () => {
@@ -369,23 +421,103 @@ function createWindow() {
   });
 }
 
+// Tray controls mirror the most important playback commands so the app remains
+// usable when the main window is hidden or de-focused.
 function createTray() {
   if (!appIcon) {
     return;
   }
 
   tray = new Tray(appIcon);
-  const contextMenu = Menu.buildFromTemplate([
+  tray.setToolTip(APP_NAME);
+  updateTrayMenu();
+}
+
+function updateTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate([
     { label: '播放/暂停', click: () => mainWindow?.webContents.send('player-control', 'toggle-play') },
     { label: '下一曲', click: () => mainWindow?.webContents.send('player-control', 'next') },
     { label: '上一曲', click: () => mainWindow?.webContents.send('player-control', 'prev') },
     { type: 'separator' },
+    { label: '桌面歌词', type: 'checkbox', checked: Boolean(desktopLyricsWindow), click: (item) => setDesktopLyricsVisible(item.checked) },
+    { label: '锁定桌面歌词', type: 'checkbox', checked: desktopLyricsLocked, enabled: Boolean(desktopLyricsWindow), click: (item) => setDesktopLyricsLocked(item.checked) },
+    { type: 'separator' },
     { label: '退出', click: () => app.quit() }
-  ]);
-  tray.setToolTip(APP_NAME);
-  tray.setContextMenu(contextMenu);
+  ]));
 }
 
+// Desktop lyrics: a transparent, always-on-top overlay. It is isolated from Node
+// and only receives state relayed from the player window through this process.
+function createDesktopLyricsWindow() {
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = Math.min(DESKTOP_LYRICS_WIDTH, workArea.width - 80);
+  desktopLyricsWindow = new BrowserWindow({
+    width,
+    height: DESKTOP_LYRICS_HEIGHT,
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + workArea.height - DESKTOP_LYRICS_HEIGHT - DESKTOP_LYRICS_BOTTOM_GAP,
+    title: `${APP_NAME} · 桌面歌词`,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    alwaysOnTop: true,
+    show: false,
+    icon: appIcon,
+    webPreferences: {
+      preload: path.join(__dirname, 'desktop-lyrics-preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  desktopLyricsWindow.setAlwaysOnTop(true, 'screen-saver');
+  loadRenderer(desktopLyricsWindow, 'desktop-lyrics');
+  desktopLyricsWindow.once('ready-to-show', () => desktopLyricsWindow?.showInactive());
+  desktopLyricsWindow.on('closed', () => {
+    desktopLyricsWindow = null;
+    mainWindow?.webContents.send('desktop-lyrics:visibility-changed', false);
+    updateTrayMenu();
+  });
+  applyDesktopLyricsLock();
+}
+
+function setDesktopLyricsVisible(visible) {
+  if (visible && !desktopLyricsWindow) {
+    createDesktopLyricsWindow();
+  } else if (!visible && desktopLyricsWindow) {
+    desktopLyricsWindow.close();
+    return false;
+  }
+  mainWindow?.webContents.send('desktop-lyrics:visibility-changed', Boolean(desktopLyricsWindow));
+  updateTrayMenu();
+  return Boolean(desktopLyricsWindow);
+}
+
+function applyDesktopLyricsLock() {
+  // Locked: clicks fall through to the desktop; mouse moves are still forwarded
+  // so the overlay can offer an unlock button on hover.
+  desktopLyricsWindow?.setIgnoreMouseEvents(desktopLyricsLocked, { forward: true });
+  desktopLyricsWindow?.webContents.send('desktop-lyrics:locked', desktopLyricsLocked);
+}
+
+function setDesktopLyricsLocked(locked) {
+  desktopLyricsLocked = Boolean(locked);
+  applyDesktopLyricsLock();
+  updateTrayMenu();
+}
+
+const isFromMainWindow = (event) => Boolean(mainWindow) && event.sender === mainWindow.webContents;
+const isFromDesktopLyrics = (event) => Boolean(desktopLyricsWindow) && event.sender === desktopLyricsWindow.webContents;
+
+// Media keys are registered centrally because Electron only exposes them at the
+// main-process level.
 function registerGlobalShortcuts() {
   globalShortcut.register('MediaPlayPause', () => {
     mainWindow?.webContents.send('player-control', 'toggle-play');
@@ -433,13 +565,18 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
 });
 
-// IPC Handlers
+// IPC handlers expose only platform capabilities. Filesystem writes, network I/O,
+// and playback state computation remain in the existing main/server/renderer split.
 ipcMain.handle('select-music-folder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory']
   });
   if (!result.canceled && result.filePaths.length > 0) {
     musicPath = result.filePaths[0];
+    shellPreferences = writeShellPreferences({
+      ...shellPreferences,
+      musicDirectory: musicPath,
+    });
     return musicPath;
   }
   return null;
@@ -511,4 +648,47 @@ ipcMain.handle('window:restart-with-shell-mode', async (event, transparentWindow
 ipcMain.on('media:update-playback-state', (_event, { isPlaying, hasActiveSong, currentTime, duration }) => {
   updateThumbarButtons(isPlaying, hasActiveSong);
   updateTaskbarProgress(currentTime, duration);
+});
+
+ipcMain.handle('desktop-lyrics:set-visible', (event, visible) => {
+  if (!isFromMainWindow(event)) return Boolean(desktopLyricsWindow);
+  return setDesktopLyricsVisible(Boolean(visible));
+});
+
+ipcMain.on('desktop-lyrics:track', (event, payload) => {
+  if (!isFromMainWindow(event)) return;
+  desktopLyricsCache.track = payload;
+  desktopLyricsWindow?.webContents.send('desktop-lyrics:track', payload);
+});
+
+ipcMain.on('desktop-lyrics:clock', (event, payload) => {
+  if (!isFromMainWindow(event)) return;
+  desktopLyricsCache.clock = payload;
+  desktopLyricsWindow?.webContents.send('desktop-lyrics:clock', payload);
+});
+
+ipcMain.on('desktop-lyrics:ready', (event) => {
+  if (!isFromDesktopLyrics(event)) return;
+  if (desktopLyricsCache.track) event.sender.send('desktop-lyrics:track', desktopLyricsCache.track);
+  if (desktopLyricsCache.clock) event.sender.send('desktop-lyrics:clock', desktopLyricsCache.clock);
+  event.sender.send('desktop-lyrics:locked', desktopLyricsLocked);
+});
+
+ipcMain.on('desktop-lyrics:set-locked', (event, locked) => {
+  if (isFromDesktopLyrics(event)) setDesktopLyricsLocked(locked);
+});
+
+ipcMain.on('desktop-lyrics:set-ignore-mouse', (event, ignore) => {
+  // Only the hover-to-unlock affordance may lift click-through while locked.
+  if (!isFromDesktopLyrics(event) || !desktopLyricsLocked) return;
+  desktopLyricsWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true });
+});
+
+ipcMain.on('desktop-lyrics:control', (event, command) => {
+  if (!isFromDesktopLyrics(event) || !DESKTOP_LYRICS_CONTROLS.has(command)) return;
+  mainWindow?.webContents.send('player-control', command);
+});
+
+ipcMain.on('desktop-lyrics:close', (event) => {
+  if (isFromDesktopLyrics(event)) setDesktopLyricsVisible(false);
 });

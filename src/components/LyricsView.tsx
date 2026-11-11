@@ -1,114 +1,130 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useCallback } from 'react';
 import { LyricLine } from '../utils/lyricsParser';
-import { motion, AnimatePresence } from 'motion/react';
+import { lyricWordProgress } from '../lib/lyricProgress';
+import { findActiveLyricIndex, useLyricWordPaint } from '../hooks/useLyricWordPaint';
 import { cn } from '../lib/utils';
+import { useAudioClock } from '../hooks/useAudioClock';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { stepAnchoredLyricScroll } from '../lib/lyricScroll';
 
 interface LyricsViewProps {
   lyrics: LyricLine[];
   currentTime: number;
+  audioRef?: React.RefObject<HTMLAudioElement | null>;
   onSeek?: (time: number) => void;
 }
 
-export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, onSeek }) => {
+export const LyricsView: React.FC<LyricsViewProps> = ({ lyrics, currentTime, audioRef, onSeek }) => {
+  const reducedMotion = useReducedMotion();
   const containerRef = useRef<HTMLDivElement>(null);
   const activeLineRef = useRef<HTMLDivElement>(null);
-
-  const activeIndex = lyrics.findIndex(
-    (line, i) => currentTime >= line.startTime && (i === lyrics.length - 1 || currentTime < lyrics[i + 1].startTime)
-  );
+  const scrollVelocity = useRef(0);
+  const timeRef = useRef(currentTime);
+  timeRef.current = currentTime;
+  const selectLine = useCallback((time: number) => findActiveLyricIndex(lyrics, time), [lyrics]);
+  const activeIndex = useAudioClock(audioRef, currentTime, selectLine);
 
   useEffect(() => {
-    if (activeLineRef.current && containerRef.current) {
-      const container = containerRef.current;
-      const activeLine = activeLineRef.current;
-      
-      const targetScroll = activeLine.offsetTop - container.offsetHeight / 2 + activeLine.offsetHeight / 2;
-      
-      container.scrollTo({
-        top: targetScroll,
-        behavior: 'smooth'
-      });
-    }
-  }, [activeIndex]);
+    const container = containerRef.current;
+    const line = activeLineRef.current;
+    if (!container || !line) return;
+    let frame = 0;
+    let position = container.scrollTop;
+    let previousTime = performance.now();
+    let settleAfter = previousTime + 750;
+    const originalText = line.querySelector<HTMLElement>('.rf-lyric-text');
+    // The original text is the anchor, not the expanding bilingual block.
+    const target = () => Math.max(0, Math.min(container.scrollHeight - container.clientHeight,
+      line.offsetTop + (originalText ? originalText.offsetTop + originalText.offsetHeight / 2 : line.offsetHeight / 2) - container.clientHeight / 2));
+    let previousTarget = target();
+    const follow = (now: number) => {
+      const destination = target();
+      const next = stepAnchoredLyricScroll(position, scrollVelocity.current, previousTarget, destination, (now - previousTime) / 1000);
+      previousTarget = destination;
+      previousTime = now;
+      position = next.position;
+      scrollVelocity.current = next.velocity;
+      container.scrollTop = position;
+      if (now < settleAfter || Math.abs(destination - position) > 0.3 || Math.abs(next.velocity) > 3) {
+        frame = requestAnimationFrame(follow);
+      } else {
+        container.scrollTop = destination;
+        scrollVelocity.current = 0;
+        frame = 0;
+      }
+    };
+    const center = () => {
+      if (reducedMotion) { container.scrollTop = target(); scrollVelocity.current = 0; return; }
+      settleAfter = performance.now() + 750;
+      if (!frame) {
+        position = container.scrollTop;
+        previousTarget = target();
+        previousTime = performance.now();
+        frame = requestAnimationFrame(follow);
+      }
+    };
+    center();
+    const observer = new ResizeObserver(center);
+    observer.observe(container);
+    if (originalText) observer.observe(originalText);
+    const stopFollowing = () => { cancelAnimationFrame(frame); frame = 0; scrollVelocity.current = 0; };
+    container.addEventListener('wheel', stopFollowing, { passive: true });
+    container.addEventListener('touchstart', stopFollowing, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      container.removeEventListener('wheel', stopFollowing);
+      container.removeEventListener('touchstart', stopFollowing);
+    };
+  }, [activeIndex, lyrics, reducedMotion]);
+
+  useLyricWordPaint(activeLineRef, lyrics[activeIndex], audioRef, timeRef);
 
   return (
-    <div 
-      ref={containerRef}
-      className="h-full overflow-y-auto px-8 py-[40vh] scrollbar-hide mask-fade-edges"
-    >
+    <div ref={containerRef} className="rf-lyric-surface relative h-full overflow-y-auto px-8 py-[40vh] scrollbar-hide mask-fade-edges">
       <div className="flex flex-col gap-4">
         {lyrics.map((line, index) => {
           const isActive = index === activeIndex;
-          const isPast = index < activeIndex;
-          
           return (
             <div
               key={index}
               ref={isActive ? activeLineRef : null}
+              role={onSeek ? 'button' : undefined}
+              tabIndex={onSeek ? 0 : undefined}
+              aria-label={line.text}
+              aria-current={isActive ? 'true' : undefined}
               onClick={() => onSeek?.(line.startTime)}
-              className={cn(
-                "cursor-pointer transition-all duration-700 origin-left py-4",
-                isActive ? "opacity-100 scale-105 blur-none py-12 translate-y-0" : "opacity-30 scale-100 hover:opacity-50 blur-[6px] translate-y-[8px]",
-                isPast && !isActive && "opacity-20"
-              )}
+              onKeyDown={(event) => {
+                if (onSeek && (event.key === 'Enter' || event.key === ' ')) {
+                  event.preventDefault(); event.stopPropagation(); onSeek(line.startTime);
+                }
+              }}
+              className={cn('relative rf-lyric-line origin-left', isActive ? 'rf-lyric-line-current' : index < activeIndex ? 'rf-lyric-line-past' : '', Math.abs(index - activeIndex) > 2 && 'rf-lyric-line-distant')}
             >
-              <div className="text-3xl md:text-5xl font-bold tracking-tight leading-tight flex flex-wrap gap-x-2">
-                {line.words ? (
-                  line.words.map((word, wIdx) => {
-                    const isWordActive = currentTime >= word.startTime && currentTime < word.startTime + word.duration;
-                    const isWordPast = currentTime >= word.startTime + word.duration;
-                    
-                    return (
-                      <motion.span 
-                        key={wIdx}
-                        className="relative inline-block text-white/40"
-                        animate={{ 
-                          y: (isWordActive || isWordPast) ? 0 : 4 
-                        }}
-                        transition={isWordActive ? { 
-                          duration: word.duration, 
-                          ease: "linear" 
-                        } : { 
-                          duration: 0.3 
-                        }}
-                      >
-                        {word.text}
-                        {isActive && (isWordActive || isWordPast) && (
-                          <motion.span 
-                            className="absolute inset-0 text-white overflow-hidden whitespace-nowrap select-none pointer-events-none"
-                            initial={isWordActive ? { width: 0, filter: "drop-shadow(0 0 0px rgba(255,255,255,0))" } : { width: '100%', filter: "drop-shadow(0 0 8px rgba(255,255,255,0.3))" }}
-                            animate={isWordActive ? { 
-                              width: '100%', 
-                              filter: "drop-shadow(0 0 12px rgba(255,255,255,0.6))" 
-                            } : { 
-                              width: '100%',
-                              filter: "drop-shadow(0 0 8px rgba(255,255,255,0.3))"
-                            }}
-                            transition={isWordActive ? { 
-                              width: { duration: word.duration, ease: "linear" },
-                              filter: { duration: 0.3 }
-                            } : { duration: 0.3 }}
-                          >
-                            {word.text}
-                          </motion.span>
-                        )}
-                      </motion.span>
-                    );
-                  })
-                ) : (
-                  <span className="text-white">{line.text}</span>
-                )}
+              <div className="rf-lyric-text text-3xl md:text-5xl font-bold tracking-tight leading-tight">
+                {line.words?.length ? line.words.map((word, wordIndex) => (
+                  <span key={wordIndex} data-lyric-word={isActive ? '' : undefined} className="rf-lyric-word" style={isActive ? {
+                    '--lyric-fill': `${lyricWordProgress(currentTime, word.startTime, word.duration) * 100}%`,
+                  } as React.CSSProperties : undefined}>
+                    {word.text}
+                    {isActive && <>
+                    <span aria-hidden="true" className="rf-lyric-word-glow"><span className="rf-lyric-word-fill">{word.text}</span></span>
+                    <span aria-hidden="true" className="rf-lyric-word-fill">{word.text}</span>
+                    </>}
+                  </span>
+                )) : line.text}
               </div>
-              <AnimatePresence mode="wait">
+              <AnimatePresence mode="wait" initial={false}>
                 {isActive && line.translation && line.translation !== '//' && (
-                  <motion.div 
-                    initial={{ opacity: 0, height: 0, y: 10 }}
-                    animate={{ opacity: 0.8, height: 'auto', y: 0 }}
-                    exit={{ opacity: 0, height: 0, y: -10 }}
-                    transition={{ duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
-                    className="overflow-hidden"
+                  <motion.div
+                    key={`${index}:${line.translation}`}
+                    initial={{ opacity: 0, height: 0, y: reducedMotion ? 0 : 10 }}
+                    animate={{ opacity: 1, height: 'auto', y: 0 }}
+                    exit={{ opacity: 0, height: 0, y: reducedMotion ? 0 : -10 }}
+                    transition={{ duration: reducedMotion ? 0 : 0.4, ease: [0.23, 1, 0.32, 1] }}
+                    className="overflow-hidden pointer-events-none"
                   >
-                    <div className="text-xl md:text-3xl mt-4 font-medium leading-relaxed text-white/70">
+                    <div className="rf-lyric-translation text-xl md:text-3xl pt-4 font-medium leading-relaxed">
                       {line.translation}
                     </div>
                   </motion.div>

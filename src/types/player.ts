@@ -2,6 +2,8 @@ import type { AppLanguage } from '../lib/copy';
 import type { LibrarySection, PlaylistCollection } from '../components/Library';
 import type { LoopMode } from '../components/PlayerControls';
 
+// Shared renderer-domain types. These describe UI models and persisted state,
+// not the raw on-disk schema used by the server.
 export interface Song {
   title: string;
   artist: string;
@@ -39,6 +41,7 @@ export interface StoredPlaylist {
 }
 
 export interface StoredPreferences {
+  visualizerMode?: import('../lib/visualizer').VisualizerMode;
   version: number;
   language: AppLanguage;
   effect: 'blur' | 'streamer';
@@ -56,6 +59,7 @@ export interface StoredPreferences {
 export interface StoredPlaybackSession {
   version: number;
   queueSongKeys: string[];
+  queueSnapshot?: Song[];
   currentSongKey: string;
   currentTime: number;
   isPlaying: boolean;
@@ -65,13 +69,26 @@ export interface StoredPlaybackSession {
   showPlaylist: boolean;
 }
 
+export type PlaylistModalScope = 'local' | 'netease';
+
 export type PlaylistModalState =
-  | { type: 'create-playlist'; pendingSongKeys: string[]; openPlaylistsAfterCreate: boolean }
-  | { type: 'rename-playlist'; playlistId: string }
-  | { type: 'delete-playlist'; playlistId: string; playlistName: string }
-  | { type: 'pick-playlist'; pendingSongKeys: string[] }
+  | {
+    type: 'create-playlist';
+    scope: PlaylistModalScope;
+    pendingSongKeys: string[];
+    pendingSongIds: string[];
+    openPlaylistsAfterCreate: boolean;
+    allowScopeSelection: boolean;
+  }
+  | { type: 'rename-playlist'; playlistId: string; scope: PlaylistModalScope }
+  | { type: 'delete-playlist'; playlistId: string; playlistName: string; scope: PlaylistModalScope }
+  | { type: 'pick-playlist'; scope: PlaylistModalScope; pendingSongKeys: string[]; pendingSongIds: string[] }
   | null;
 
+export const NETEASE_STREAM_PATH_PREFIX = '/api/netease/song/stream/';
+
+// Song identity is stable across queue, playlist, and session persistence. Local
+// File objects fall back to name+size because they do not yet have a URL.
 export const createSongIdentity = (song: Song) => {
   const fileIdentity = typeof song.file === 'string'
     ? song.file
@@ -90,6 +107,17 @@ export const getPersistedSongKey = (song: Song) => {
   return createSongIdentity(song);
 };
 
+export const getNetEaseSongIdFromSong = (song: Song) => {
+  if (typeof song.file !== 'string' || !song.file.startsWith(NETEASE_STREAM_PATH_PREFIX)) {
+    return null;
+  }
+
+  const songId = song.file.slice(NETEASE_STREAM_PATH_PREFIX.length).trim();
+  return songId ? decodeURIComponent(songId) : null;
+};
+
+// Rehydrate stored playlist definitions by resolving saved song keys against the
+// current library snapshot.
 export const rebuildPlaylistCollections = (playlists: StoredPlaylist[], songs: Song[]): PlaylistCollection[] => {
   const songMap = new Map(songs.map((track) => [createSongIdentity(track), track]));
 
@@ -97,6 +125,8 @@ export const rebuildPlaylistCollections = (playlists: StoredPlaylist[], songs: S
     id: playlist.id,
     name: playlist.name,
     updatedAt: playlist.updatedAt,
+    source: 'local',
+    playlistCategory: 'created',
     songs: playlist.songKeys.map((songKey) => songMap.get(songKey)).filter((track): track is Song => Boolean(track)),
   }));
 };
