@@ -1,9 +1,10 @@
 import express from "express";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import fs from "fs";
 import type { Server } from "http";
 import { parseFile } from "music-metadata";
 import { createRequire } from "module";
+import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
 import path from "path";
@@ -214,6 +215,10 @@ const NETEASE_FAVORITE_TYPES = new Set<NetEaseFavoriteKind>(['song', 'album']);
 const DEFAULT_NETEASE_AUDIO_LEVEL = 'exhigh';
 const NETEASE_AUDIO_LEVEL_PRIORITY = ['jymaster', 'sky', 'dolby', 'jyeffect', 'hires', 'lossless', 'exhigh', 'higher', 'standard'] as const;
 const NETEASE_FALLBACK_BITRATES = [320000, 192000, 128000] as const;
+const NETEASE_STREAM_COOLDOWN_MS = 60_000;
+const NETEASE_STREAM_REQUEST_TIMEOUT_MS = 5_000;
+const NETEASE_CHECKED_STREAM_TTL_MS = 30_000;
+const NETEASE_CHECKED_STREAM_LIMIT = 32;
 const NETEASE_SONG_DETAIL_BATCH_SIZE = 500;
 const NETEASE_STREAM_RESPONSE_HEADERS = ['accept-ranges', 'content-length', 'content-range', 'content-type', 'etag', 'last-modified'] as const;
 
@@ -745,15 +750,48 @@ const getNetEaseTrackIds = (value: unknown) => {
     : [];
 };
 
-const getNetEaseSongUrlFromResponse = (value: unknown) => {
-  const payload = asRecord(value);
-  const data = payload?.data;
+const isNetEaseRiskControl = (value: unknown) => {
+  const response = asRecord(value);
+  const body = asRecord(response?.body);
+  return [body?.code, response?.code, response?.status].some((code) => {
+    const number = getNumberValue(code);
+    return number === -460 || number === 460;
+  });
+};
 
-  if (Array.isArray(data)) {
-    return getStringValue(asRecord(data[0])?.url);
+class NetEaseStreamRateLimit extends Error {
+  constructor(readonly retryAfter: number) {
+    super('NetEase temporarily limited playback. Try again later.');
   }
+}
 
-  return getStringValue(asRecord(data)?.url);
+class NetEasePlaybackInitError extends Error {
+  constructor(cause: unknown) {
+    super('Failed to initialize NetEase playback encryption', { cause });
+  }
+}
+
+let neteaseKeyRegistration: Promise<void> | undefined;
+
+// The SDK CLI registers its playback key at startup. Direct imports skip that step.
+const initializeNetEasePlaybackKey = (cookie: string | null) => {
+  neteaseKeyRegistration ??= (async () => {
+    const deviceId = cookie?.match(/(?:^|;\s*)deviceId=([^;]+)/)?.[1]?.trim();
+    const result = await neteaseApi.register_xeapikey(deviceId ? { deviceId } : {});
+    const key = asRecord(result.body);
+    if (result.status !== 200 || !key?.sk || !key.publicKey || !key.version) {
+      throw new Error('The NetEase SDK returned an invalid playback key');
+    }
+    const keyPath = path.join(tmpdir(), 'xeapi_public_key');
+    const temporaryPath = `${keyPath}.${randomUUID()}.tmp`;
+    try {
+      await fs.promises.writeFile(temporaryPath, JSON.stringify(key), { flag: 'wx' });
+      await fs.promises.rename(temporaryPath, keyPath);
+    } finally {
+      await fs.promises.rm(temporaryPath, { force: true });
+    }
+  })().finally(() => { neteaseKeyRegistration = undefined; });
+  return neteaseKeyRegistration;
 };
 
 const ensureDirectory = (directoryPath: string) => {
@@ -1593,6 +1631,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     cookie: sanitizeNetEaseCookie(process.env.NETEASE_API_COOKIE),
     account: null,
   };
+  let neteaseStreamBlockedUntil = 0;
+  const checkedStreams = new Map<string, { url: string; cookie: string | null; expires: number }>();
 
   const neteaseRequestHandlers: Record<string, NetEaseRequestHandler | undefined> = {
     '/login/status': neteaseApi.login_status,
@@ -1736,33 +1776,86 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       .filter((entry): entry is LibrarySongPayload => Boolean(entry));
   };
 
-  const resolveNetEaseStreamUrl = async (songId: string, level: string) => {
-    for (const candidateLevel of getNetEaseAudioLevelsToTry(level)) {
-      const primaryResult = await requestNetEase('/song/url/v1', {
-        id: songId,
-        level: candidateLevel,
-        unblock: true,
-        randomCNIP: true,
-      });
-      const primaryUrl = getNetEaseSongUrlFromResponse(primaryResult.body);
-      if (primaryUrl) {
-        return primaryUrl;
+  const checkNetEaseStreamRequest = (signal: AbortSignal) => {
+    signal.throwIfAborted();
+    const remaining = neteaseStreamBlockedUntil - Date.now();
+    if (remaining > 0) {
+      throw new NetEaseStreamRateLimit(Math.ceil(remaining / 1000));
+    }
+  };
+
+  const requestNetEaseStream = async (
+    endpoint: '/song/url/v1' | '/song/url',
+    params: { id: string; level?: string; br?: number },
+    signal: AbortSignal,
+  ) => {
+    checkNetEaseStreamRequest(signal);
+    const streamCookie = neteaseSession.cookie;
+    const payload = {
+      ...params,
+      randomCNIP: false,
+      timeout: NETEASE_STREAM_REQUEST_TIMEOUT_MS,
+    };
+    const result = await requestNetEase(endpoint, payload).catch(async (error: unknown) => {
+      if (endpoint !== '/song/url/v1' || !(error instanceof Error) || error.message !== 'xeapi public key is missing') {
+        throw error;
       }
+      await initializeNetEasePlaybackKey(streamCookie).catch((cause: unknown) => {
+        throw new NetEasePlaybackInitError(cause);
+      });
+      checkNetEaseStreamRequest(signal);
+      if (neteaseSession.cookie !== streamCookie) throw new Error('NetEase session changed during playback lookup');
+      return requestNetEase(endpoint, payload);
+    }).catch((error: unknown) => {
+      if (isNetEaseRiskControl(error)) {
+        neteaseStreamBlockedUntil = Date.now() + NETEASE_STREAM_COOLDOWN_MS;
+        throw new NetEaseStreamRateLimit(NETEASE_STREAM_COOLDOWN_MS / 1000);
+      }
+      throw error;
+    });
+
+    const data = asRecord(result.body)?.data;
+    const entry = asRecord(Array.isArray(data) ? data[0] : data);
+    if (isNetEaseRiskControl(result) || isNetEaseRiskControl(entry)) {
+      neteaseStreamBlockedUntil = Date.now() + NETEASE_STREAM_COOLDOWN_MS;
+    }
+    checkNetEaseStreamRequest(signal);
+
+    const trackCode = getNumberValue(entry?.code);
+    return {
+      url: trackCode === null || trackCode === 200 ? getStringValue(entry?.url) : null,
+      preview: entry?.freeTrialInfo != null,
+    };
+  };
+
+  const resolveNetEaseStreamUrl = async (songId: string, level: string, signal: AbortSignal) => {
+    let initError: NetEasePlaybackInitError | undefined;
+    try {
+      for (const candidateLevel of getNetEaseAudioLevelsToTry(level)) {
+        const { url, preview } = await requestNetEaseStream('/song/url/v1', {
+          id: songId,
+          level: candidateLevel,
+        }, signal);
+        if (preview || url) return { url, preview };
+      }
+    } catch (error) {
+      if (!(error instanceof NetEasePlaybackInitError)) throw error;
+      initError = error;
     }
 
-    for (const bitrate of NETEASE_FALLBACK_BITRATES) {
-      const fallbackResult = await requestNetEase('/song/url', {
+    // A local SDK startup failure sent no playback request to the new endpoint.
+    // Use the existing legacy lookup once in that case, with the same session.
+    const bitrates = initError ? NETEASE_FALLBACK_BITRATES.slice(0, 1) : NETEASE_FALLBACK_BITRATES;
+    for (const bitrate of bitrates) {
+      const { url, preview } = await requestNetEaseStream('/song/url', {
         id: songId,
         br: bitrate,
-        randomCNIP: true,
-      });
-      const fallbackUrl = getNetEaseSongUrlFromResponse(fallbackResult.body);
-      if (fallbackUrl) {
-        return fallbackUrl;
-      }
+      }, signal);
+      if (preview || url) return { url, preview };
     }
 
-    return null;
+    if (initError) throw initError;
+    return { url: null, preview: false };
   };
 
   if (!fs.existsSync(musicDir)) {
@@ -2392,16 +2485,43 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     const level = typeof req.query.level === 'string' && req.query.level.trim()
       ? req.query.level.trim()
       : DEFAULT_NETEASE_AUDIO_LEVEL;
+    const checkOnly = req.query.check === '1';
+    const streamKey = JSON.stringify([songId, normalizeNetEaseAudioLevel(level)]);
+    const requestCookie = neteaseSession.cookie;
+
+    const abortController = new AbortController();
+    res.once('close', () => abortController.abort());
 
     try {
-      const songUrl = await resolveNetEaseStreamUrl(songId, level);
-      if (!songUrl) {
-        res.status(404).json({ error: 'NetEase song url is unavailable' });
+      res.setHeader('Cache-Control', 'no-store');
+      const checked = checkedStreams.get(streamKey);
+      const reusable = checked && checked.cookie === requestCookie && checked.expires > Date.now();
+      const { url: songUrl, preview } = reusable
+        ? { url: checked.url, preview: false }
+        : await resolveNetEaseStreamUrl(songId, level, abortController.signal);
+      if (neteaseSession.cookie !== requestCookie) {
+        res.status(409).json({ code: 'NETEASE_SESSION_CHANGED', error: 'NetEase session changed during playback check' });
         return;
       }
-
-      const abortController = new AbortController();
-      req.on('aborted', () => abortController.abort());
+      if (preview || !songUrl) {
+        res.status(404).json({
+          code: preview ? 'NETEASE_PREVIEW_ONLY' : 'NETEASE_TRACK_UNAVAILABLE',
+          error: preview ? 'Only a preview is available for this song' : 'NetEase did not provide a playable URL',
+        });
+        return;
+      }
+      if (checkOnly) {
+        if (!reusable) {
+          checkedStreams.delete(streamKey);
+          checkedStreams.set(streamKey, { url: songUrl, cookie: requestCookie, expires: Date.now() + NETEASE_CHECKED_STREAM_TTL_MS });
+          if (checkedStreams.size > NETEASE_CHECKED_STREAM_LIMIT) {
+            const oldest = checkedStreams.keys().next();
+            if (!oldest.done) checkedStreams.delete(oldest.value);
+          }
+        }
+        res.status(204).end();
+        return;
+      }
 
       const upstreamResponse = await fetch(songUrl, {
         headers: {
@@ -2413,11 +2533,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       });
 
       if (!upstreamResponse.ok && upstreamResponse.status !== 206) {
+        if (upstreamResponse.status === 403 || upstreamResponse.status === 404) {
+          if (checkedStreams.get(streamKey) === checked) checkedStreams.delete(streamKey);
+        }
+        void upstreamResponse.body?.cancel().catch(() => {});
         res.status(upstreamResponse.status).json({ error: 'NetEase audio stream is unavailable' });
         return;
       }
 
-      res.setHeader('Cache-Control', 'no-store');
       res.status(upstreamResponse.status);
 
       NETEASE_STREAM_RESPONSE_HEADERS.forEach((headerName) => {
@@ -2450,14 +2573,30 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       });
       proxyStream.pipe(res);
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        if (!res.headersSent) {
-          res.end();
-        }
+      if (abortController.signal.aborted) {
         return;
       }
 
-      res.status(502).json({ error: 'Failed to resolve NetEase song url' });
+      if (neteaseSession.cookie !== requestCookie) {
+        res.status(409).json({ code: 'NETEASE_SESSION_CHANGED', error: 'NetEase session changed during playback check' });
+        return;
+      }
+
+      if (error instanceof NetEaseStreamRateLimit) {
+        res.setHeader('Retry-After', error.retryAfter);
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(429).json({
+          code: 'NETEASE_RISK_CONTROL',
+          error: error.message,
+        });
+        return;
+      }
+      if (error instanceof NetEasePlaybackInitError) {
+        res.status(502).json({ code: 'NETEASE_SDK_INIT_FAILED', error: error.message });
+        return;
+      }
+
+      res.status(502).json({ code: 'NETEASE_LOOKUP_FAILED', error: 'Failed to resolve NetEase song URL' });
     }
   });
 

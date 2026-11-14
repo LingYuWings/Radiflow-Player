@@ -17,9 +17,10 @@ import { normalizeVisualizerMode, VisualizerMode } from './lib/visualizer';
 import { AppLogo } from './components/AppLogo';
 import { WindowChrome } from './components/WindowChrome';
 import { OnboardingGuide, type GuidePanel, type GuideSurface } from './components/OnboardingGuide';
+import { PlaybackErrorDialog } from './components/PlaybackErrorDialog';
 import { getEQCopy, getSettingsCopy, AppLanguage } from './lib/copy';
 import { cn } from './lib/utils';
-import { createAudioPlayback } from './lib/audioPlayback';
+import { createAudioPlayback, type PlaybackError } from './lib/audioPlayback';
 import { createPlaybackFeedback, hasPlaybackIntent } from './lib/playbackFeedback';
 import { pageMotion, PAGE_ENTER_EASE, PAGE_EXIT_EASE } from './lib/pageMotion';
 import {
@@ -222,6 +223,7 @@ export default function App() {
   const [pendingPlaybackSession, setPendingPlaybackSession] = useState<StoredPlaybackSession | null>(null);
   const [currentPlaybackPlaylistId, setCurrentPlaybackPlaylistId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState<{ track: string; error: PlaybackError } | null>(null);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [volume, setVolume] = useState(0.8);
   const [eqEnabled, setEQEnabled] = useState(false);
@@ -233,6 +235,7 @@ export default function App() {
   // not trigger UI updates on their own.
   const audioRef = useRef<HTMLAudioElement>(null);
   const playbackRef = useRef<ReturnType<typeof createAudioPlayback> | null>(null);
+  const playbackTrackRef = useRef('');
   const audioObjectUrlRef = useRef<string | null>(null);
   const persistedBackgroundRef = useRef<string | null>(null);
   const preferencesOverrideRef = useRef<StoredPreferences | null>(null);
@@ -787,14 +790,30 @@ export default function App() {
     });
   }, [eqEnabled, eqGains]);
 
-  // Session restore waits for the library to finish loading so persisted queue keys
-  // can be resolved back into current Song objects before playback resumes.
+  const loadPlaybackTrack = (track: Song, autoplay: boolean, time = 0) => {
+    const url = typeof track.file === 'string' ? track.file : track.file ? URL.createObjectURL(track.file) : '';
+    if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+    audioObjectUrlRef.current = track.file && typeof track.file !== 'string' ? url : null;
+    playbackTrackRef.current = track.title;
+    setPlaybackError(null);
+    if (!url) {
+      playbackRef.current?.clear();
+      if (autoplay) setPlaybackError({ track: track.title, error: { code: 'MEDIA_SOURCE_MISSING' } });
+      return;
+    }
+    if (autoplay) initAudioContext();
+    playbackRef.current?.load(url, autoplay, time);
+  };
+
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     let previousIntent = false;
-    const controller = createAudioPlayback(audio, (status) => {
+    const controller = createAudioPlayback(audio, (status, error) => {
       playbackFeedback.setStatus(status);
+      if (error && playbackTrackRef.current) {
+        setPlaybackError({ track: playbackTrackRef.current, error });
+      }
       const intent = hasPlaybackIntent(status);
       if (intent !== previousIntent) {
         previousIntent = intent;
@@ -810,6 +829,7 @@ export default function App() {
     };
   }, []);
 
+  // Restore persisted queue entries after both the local library and cloud session load.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!hasLoadedPlaybackSession || hasRestoredPlaybackSession || !hasLoadedLibrary || isRestoringNetEaseSession) return;
@@ -836,8 +856,6 @@ export default function App() {
 
     const restoredSong = restoredQueue[restoredIndex];
     const restoredTime = Math.max(0, sessionToRestore.currentTime);
-    const audio = audioRef.current;
-
     setPlaybackQueue(restoredQueue);
     setCurrentPlaybackPlaylistId(sessionToRestore.currentPlaybackPlaylistId);
     setCurrentIndex(restoredIndex);
@@ -853,14 +871,7 @@ export default function App() {
     setHasRestoredPlaybackSession(true);
     setPendingPlaybackSession(null);
 
-    if (!audio || !restoredSong.file) {
-      setIsPlaying(false);
-      return;
-    }
-
-    const restoredUrl = typeof restoredSong.file === 'string' ? restoredSong.file : URL.createObjectURL(restoredSong.file);
-    if (typeof restoredSong.file !== 'string') audioObjectUrlRef.current = restoredUrl;
-    playbackRef.current?.load(restoredUrl, false, restoredTime);
+    loadPlaybackTrack(restoredSong, false, restoredTime);
   }, [hasLoadedLibrary, hasLoadedPlaybackSession, hasRestoredPlaybackSession, isRestoringNetEaseSession, librarySongs, pendingPlaybackSession]);
 
   // Audio element events remain the source of truth for time and duration, then
@@ -1344,19 +1355,11 @@ export default function App() {
     setCurrentTime(0);
     setDuration(0);
 
-    if (audioRef.current && selectedSong.file) {
-      const url = typeof selectedSong.file === 'string' ? selectedSong.file : URL.createObjectURL(selectedSong.file);
-      if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
-      audioObjectUrlRef.current = typeof selectedSong.file === 'string' ? null : url;
-      initAudioContext();
-      playbackRef.current?.load(url);
-    } else {
-      playbackRef.current?.clear();
-    }
+    loadPlaybackTrack(selectedSong, true);
   };
 
   const togglePlay = () => {
-    if (audioRef.current && audioRef.current.src && song.title !== EMPTY_SONG.title) {
+    if (song.file && song.title !== EMPTY_SONG.title) {
       initAudioContext();
       playbackRef.current?.toggle();
     }
@@ -1681,6 +1684,8 @@ export default function App() {
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
+    playbackTrackRef.current = '';
+    setPlaybackError(null);
     playbackRef.current?.clear();
     if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
     audioObjectUrlRef.current = null;
@@ -1761,10 +1766,7 @@ export default function App() {
     const restored = previous.songs[previous.index];
     setPlaybackQueue(previous.songs); setCurrentIndex(previous.index); setSong(restored); setCurrentPlaybackPlaylistId(previous.source);
     if (restored !== song || !audioRef.current?.src) {
-      if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
-      const url = typeof restored.file === 'string' ? restored.file : restored.file ? URL.createObjectURL(restored.file) : '';
-      audioObjectUrlRef.current = typeof restored.file === 'string' ? null : url;
-      if (url) { initAudioContext(); playbackRef.current?.load(url, previous.playing, previous.time); }
+      loadPlaybackTrack(restored, previous.playing, previous.time);
     }
   };
   const queueNext = (track: Song) => {
@@ -1804,7 +1806,7 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || playbackError) return;
       if (showGuide) return;
       if (isOverlaySection(currentSection)) {
         if (event.key === 'Escape') {
@@ -1864,7 +1866,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentIndex, playbackQueue, isShuffle, loopMode, isPlaying, volume, currentSection, lastLibrarySection, showGuide]);
+  }, [currentIndex, playbackQueue, isShuffle, loopMode, isPlaying, volume, currentSection, lastLibrarySection, showGuide, playbackError]);
 
   const showPlaylistOverview = () => {
     pendingNetEasePlaylistRequestRef.current = null;
@@ -2866,6 +2868,10 @@ export default function App() {
         )}
       </AnimatePresence>
       {showGuide && <OnboardingGuide language={language} onDismiss={dismissGuide} onPrepareStep={prepareGuideStep} visualizerEnabled={visualizerMode !== 'off'} />}
+      {playbackError && <PlaybackErrorDialog
+        track={playbackError.track} error={playbackError.error} language={language}
+        onDismiss={() => setPlaybackError(null)}
+      />}
     </div>
   );
 }

@@ -670,6 +670,10 @@ Electron 的 `app.getPath('userData')` 路径用于跨重启的系统级持久�
 #### GET /api/netease/song/stream/:id
 
 - 解析并代理网易云歌曲可播放地址
+- 播放器在加载网易云音频前用 `check=1` 请求同一路由。服务端取得完整音频地址时返回 `204`，并短暂保留该会话的地址供实际播放复用。
+- 直接调用网易云 SDK 时，若首次取址缺少 XEAPI 公钥，服务端先通过 SDK 注册公钥。注册失败时，用同一会话尝试一次现有的旧版取址接口。如果旧接口也没有提供音频，返回 `NETEASE_SDK_INIT_FAILED`。收到上游风控响应时直接停止取址。
+- 上游返回 `-460` 或 `460` 时立即停止取址，返回 HTTP `429`、`NETEASE_RISK_CONTROL` 和以秒为单位的 `Retry-After`。服务端在 60 秒内拦截后续取址请求。
+- 普通的无地址响应可尝试较低音质。没有可用地址或只有试听时分别返回 `404` 和错误码 `NETEASE_TRACK_UNAVAILABLE` 或 `NETEASE_PREVIEW_ONLY`。播放错误会在界面弹窗中显示。
 
 #### GET /api/lyrics
 

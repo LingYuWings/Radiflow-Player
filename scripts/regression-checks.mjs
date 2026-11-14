@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { buildSync } from 'esbuild';
+import { tsImport } from 'tsx/esm/api';
 const require = createRequire(import.meta.url);
 const load = (filename, extra = '', overrides = {}) => {
   const contents = fs.readFileSync(filename, 'utf8') + extra;
@@ -49,6 +51,39 @@ player.load('unavailable'); audio.requests[2].reject(new Error('network')); awai
 player.clear(); assert.equal(audio.src, ''); assert.equal(states.at(-1), 'idle');
 const beforeDispose = states.length; player.dispose(); audio.dispatchEvent(new Event('error')); assert.equal(states.length, beforeDispose);
 console.log('PASS playback: restore, buffering, cancel, failure, stale requests, cleanup');
+
+const cloudAudio = new Audio();
+const checks = [];
+const playbackErrors = [];
+const cloudPlayer = createAudioPlayback(cloudAudio, (_status, error) => {
+  if (error) playbackErrors.push(error);
+}, (_url, signal) => new Promise((resolve, reject) => checks.push({ signal, resolve, reject })));
+cloudPlayer.load('/api/netease/song/stream/1', false, 27);
+assert.equal(cloudAudio.src, '', 'restoring a cloud song must defer loading its stream');
+assert.equal(checks.length, 0, 'startup must not check a paused cloud song');
+cloudPlayer.toggle();
+assert.equal(checks.length, 1);
+assert.equal(cloudAudio.requests.length, 0, 'do not call play until the check succeeds');
+cloudPlayer.load('/api/netease/song/stream/2');
+assert.equal(checks[0].signal.aborted, true);
+checks[0].reject(new Error('obsolete check failed'));
+await Promise.resolve();
+assert.equal(playbackErrors.length, 0, 'a replaced track cannot show a stale error');
+const copyrightError = { code: 'NETEASE_TRACK_UNAVAILABLE', httpStatus: 404 };
+checks[1].reject(copyrightError);
+await Promise.resolve();
+assert.deepEqual(playbackErrors, [copyrightError]);
+assert.equal(cloudAudio.requests.length, 0);
+cloudPlayer.toggle();
+checks[2].resolve();
+await Promise.resolve();
+assert.equal(cloudAudio.src, '/api/netease/song/stream/2');
+assert.equal(cloudAudio.requests.length, 1, 'the track can play after a successful check');
+cloudAudio.requests[0].reject(new DOMException('Format failure', 'NotSupportedError'));
+await Promise.resolve();
+assert.equal(playbackErrors.at(-1).code, 'NotSupportedError', 'media failures include a diagnostic code');
+cloudPlayer.dispose();
+console.log('PASS playback checks: deferred cloud restore, cancellation, retry, and error details');
 const { createPlaybackFeedback, hasPlaybackIntent } = load('src/lib/playbackFeedback.ts');
 const feedback = createPlaybackFeedback();
 const feedbackStates = [];
@@ -347,6 +382,17 @@ const { playbackAction, PlaybackStatusLine } = load('src/components/PlaybackStat
 assert.equal(playbackAction('buffering', true, 'zh-CN'), '暂停');
 assert.equal(playbackAction('error', false, 'zh-CN'), '重试播放');
 assert(renderToStaticMarkup(React.createElement(PlaybackStatusLine, { status: 'error', language: 'en-US' })).includes('Playback failed'));
+const { PlaybackErrorDialog } = load('src/components/PlaybackErrorDialog.tsx');
+const unavailableDialog = renderToStaticMarkup(React.createElement(PlaybackErrorDialog, {
+  track: 'Unavailable track', error: copyrightError, language: 'zh-CN', onDismiss() {},
+}));
+assert(unavailableDialog.includes('role="alertdialog"') && unavailableDialog.includes('Unavailable track'));
+assert(unavailableDialog.includes('可能无版权') && unavailableDialog.includes('HTTP 404'));
+const riskDialog = renderToStaticMarkup(React.createElement(PlaybackErrorDialog, {
+  track: 'Cloud track', error: { code: 'NETEASE_RISK_CONTROL', httpStatus: 429, retryAfter: 60 },
+  language: 'en-US', onDismiss() {},
+}));
+assert(riskDialog.includes('Wait at least 60 seconds') && riskDialog.includes('NETEASE_RISK_CONTROL'));
 console.log('PASS iteration A: disjoint buffered ranges, source reset, deduplicated updates, listener cleanup, single-commit scrubbing and shared playback feedback');
 
 let queueEffect, queueDependencies;
@@ -422,3 +468,119 @@ for (const target of new Set(guideTargets)) {
 assert(guideSource.includes('pointer-events-none') && guideSource.includes('aria-modal="false"'), 'guided controls must remain interactive');
 assert(playerStyles.includes('rf-guide-spotlight') && playerStyles.includes('border: 2px dashed') && playerStyles.includes('backdrop-filter: blur(30px)'), 'tour uses dashed glass spotlight');
 console.log('PASS onboarding: every tour target is anchored, controls remain interactive, glass spotlight exists');
+
+const netease = require('@neteasecloudmusicapienhanced/api');
+const originalSongUrl = netease.song_url_v1;
+const originalLegacySongUrl = netease.song_url;
+const originalRegisterXeapiKey = netease.register_xeapikey;
+const originalNow = Date.now;
+const playbackRequests = [];
+let upstreamMode = 'rejected';
+let nowOffset = 0;
+let keyRequests = 0;
+netease.register_xeapikey = async () => {
+  keyRequests++;
+  throw new Error('Simulated key registration failure');
+};
+netease.song_url_v1 = async (query) => {
+  playbackRequests.push(query);
+  if (upstreamMode === 'rejected') throw { status: 400, body: { code: -460 } };
+  if (upstreamMode === 'resolved') return { status: 200, body: { code: '460' } };
+  if (upstreamMode === 'preview') {
+    return { status: 200, body: { data: [{ url: 'https://invalid.example/preview', freeTrialInfo: {} }] } };
+  }
+  if (upstreamMode === 'available') {
+    return { status: 200, body: { data: [{ url: mockAudioUrl, code: 200 }] } };
+  }
+  if (upstreamMode === 'failed') throw new Error('Simulated connection failure');
+  if (upstreamMode.startsWith('missing-key')) throw new Error('xeapi public key is missing');
+  return { status: 200, body: { data: [{ url: null }] } };
+};
+netease.song_url = async (query) => {
+  playbackRequests.push(query);
+  if (upstreamMode === 'missing-key-legacy-available') {
+    return { status: 200, body: { data: [{ url: mockAudioUrl, code: 200 }] } };
+  }
+  return { status: 200, body: { data: [{ url: null }] } };
+};
+Date.now = () => originalNow() + nowOffset;
+let playbackServer;
+let mockAudioUrl;
+const playbackFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'radiflow-playback-'));
+try {
+  const audioBytes = Buffer.from([1, 2, 3, 4]);
+  fs.writeFileSync(path.join(playbackFixtureDir, 'fixture.mp3'), audioBytes);
+  const { startServer } = await tsImport('../server.ts', import.meta.url);
+  const started = await startServer({ port: 0, host: '127.0.0.1', mode: 'production', initialMusicDir: playbackFixtureDir });
+  playbackServer = started.server;
+  const stream = (id, options) => fetch(`${started.url}/api/netease/song/stream/${id}?level=exhigh`, options);
+  const check = (id) => fetch(`${started.url}/api/netease/song/stream/${id}?level=exhigh&check=1`);
+
+  const denied = await stream(123);
+  assert.equal(denied.status, 429, 'an upstream -460 should produce a rate-limit response');
+  assert.equal((await denied.json()).code, 'NETEASE_RISK_CONTROL');
+  assert(Number(denied.headers.get('Retry-After')) > 0);
+  assert.equal(playbackRequests.length, 1, 'risk control must stop the lookup immediately');
+  assert.equal(playbackRequests[0].randomCNIP, false, 'playback opts out even when the SDK default is enabled');
+  assert.equal(playbackRequests[0].timeout, 5_000, 'playback lookups pass a timeout to the SDK');
+  assert.equal(playbackRequests[0].unblock, undefined);
+
+  const blocked = await stream(456);
+  assert.equal(blocked.status, 429);
+  await blocked.json();
+  assert.equal(playbackRequests.length, 1, 'cooldown also protects rapid changes to another track');
+
+  nowOffset += 60_000;
+  upstreamMode = 'resolved';
+  const resolvedDenial = await stream(789);
+  assert.equal(resolvedDenial.status, 429, 'recognize a resolved response with a string risk code');
+  await resolvedDenial.json();
+  assert.equal(playbackRequests.length, 2, 'a stream request can reach the upstream again after cooldown');
+
+  nowOffset += 60_000;
+  upstreamMode = 'preview';
+  const preview = await check(789);
+  assert.equal(preview.status, 404, 'a preview is not a full stream');
+  assert.equal((await preview.json()).code, 'NETEASE_PREVIEW_ONLY');
+  assert.equal(playbackRequests.length, 3);
+
+  upstreamMode = 'unavailable';
+  const unavailable = await check(789);
+  assert.equal(unavailable.status, 404);
+  assert.equal((await unavailable.json()).code, 'NETEASE_TRACK_UNAVAILABLE');
+  assert.deepEqual(playbackRequests.slice(3).map(({ level, br }) => level ?? br),
+    ['exhigh', 'higher', 'standard', 320000, 192000, 128000]);
+
+  upstreamMode = 'available';
+  mockAudioUrl = `${started.url}/music/fixture.mp3`;
+  const beforeCheck = playbackRequests.length;
+  assert.equal((await check(789)).status, 204, 'checking a playable track must not proxy its body');
+  const proxied = await stream(789, { headers: { Range: 'bytes=0-1' } });
+  assert.equal(proxied.status, 206);
+  assert.deepEqual(Buffer.from(await proxied.arrayBuffer()), audioBytes.subarray(0, 2));
+  assert.equal(playbackRequests.length, beforeCheck + 1, 'streaming reuses the verified URL');
+
+  upstreamMode = 'failed';
+  const brokenCheck = await check(321);
+  assert.equal(brokenCheck.status, 502);
+  assert.equal((await brokenCheck.json()).code, 'NETEASE_LOOKUP_FAILED');
+
+  upstreamMode = 'missing-key';
+  const uninitialized = await check(321);
+  assert.equal(uninitialized.status, 502);
+  assert.equal((await uninitialized.json()).code, 'NETEASE_SDK_INIT_FAILED');
+  assert.equal(keyRequests, 1, 'library mode initializes only the missing playback key');
+  assert.equal(playbackRequests.at(-1).br, 320000, 'an initialization failure can use the existing legacy lookup');
+
+  upstreamMode = 'missing-key-legacy-available';
+  assert.equal((await check(654)).status, 204, 'a full legacy stream is usable when XEAPI initialization fails');
+} finally {
+  Date.now = originalNow;
+  netease.song_url_v1 = originalSongUrl;
+  netease.song_url = originalLegacySongUrl;
+  netease.register_xeapikey = originalRegisterXeapiKey;
+  if (playbackServer) await new Promise(resolve => playbackServer.close(resolve));
+  fs.unlinkSync(path.join(playbackFixtureDir, 'fixture.mp3'));
+  fs.rmdirSync(playbackFixtureDir);
+}
+console.log('PASS NetEase playback: risk cooldown, unavailable tracks, previews, and reuse of a checked stream');

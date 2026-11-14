@@ -1,12 +1,49 @@
+import { NETEASE_STREAM_PATH_PREFIX } from '../types/player';
+
 export type PlaybackStatus = 'idle' | 'loading' | 'buffering' | 'playing' | 'paused' | 'error';
 
+export interface PlaybackError {
+  code: string;
+  httpStatus?: number;
+  retryAfter?: number;
+}
+
+export async function checkNetEasePlayback(url: string, signal: AbortSignal) {
+  const checkUrl = new URL(url, window.location.origin);
+  checkUrl.searchParams.set('check', '1');
+  const response = await fetch(checkUrl, { signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
+  if (response.status === 204) return;
+  const body = await response.json().catch(() => null);
+  const retryAfter = Number(response.headers.get('Retry-After'));
+  throw {
+    code: typeof body?.code === 'string' ? body.code : 'NETEASE_LOOKUP_FAILED',
+    httpStatus: response.status,
+    ...(retryAfter > 0 ? { retryAfter } : {}),
+  } satisfies PlaybackError;
+}
+
 // Own asynchronous play requests independently of React renders and effect cleanup.
-export function createAudioPlayback(audio: HTMLAudioElement, onStatus: (status: PlaybackStatus) => void) {
+export function createAudioPlayback(
+  audio: HTMLAudioElement,
+  onStatus: (status: PlaybackStatus, error?: PlaybackError) => void,
+  checkPlayback = checkNetEasePlayback,
+) {
   let request = 0;
   let wantsPlay = false;
   let disposed = false;
   let pendingSeek: number | null = null;
+  let source = '';
+  let needsCheck = false;
+  let pendingCheck: AbortController | undefined;
+  let reportedError = false;
   const emit = (status: PlaybackStatus) => { if (!disposed) onStatus(status); };
+  const fail = (error: PlaybackError) => {
+    if (disposed || reportedError) return;
+    reportedError = true;
+    wantsPlay = false;
+    needsCheck = source.startsWith(NETEASE_STREAM_PATH_PREFIX);
+    onStatus('error', error);
+  };
   const listeners: Record<string, () => void> = {
     playing: () => { if (wantsPlay) emit('playing'); },
     pause: () => { if (audio.paused && !wantsPlay) emit('paused'); },
@@ -19,10 +56,10 @@ export function createAudioPlayback(audio: HTMLAudioElement, onStatus: (status: 
       }
     },
     error: () => {
+      if (!audio.src || pendingCheck) return;
       request++;
-      wantsPlay = false;
       pendingSeek = null;
-      emit('error');
+      fail({ code: audio.error ? `MEDIA_ERR_${audio.error.code}` : 'MEDIA_PLAYBACK_FAILED' });
     },
     ended: () => { wantsPlay = false; emit('paused'); },
   };
@@ -30,27 +67,55 @@ export function createAudioPlayback(audio: HTMLAudioElement, onStatus: (status: 
 
   const play = async () => {
     const currentRequest = ++request;
+    pendingCheck?.abort();
+    reportedError = false;
     wantsPlay = true;
     emit('loading');
     try {
+      if (needsCheck) {
+        const check = new AbortController();
+        pendingCheck = check;
+        await checkPlayback(source, check.signal);
+        if (disposed || currentRequest !== request) return;
+        pendingCheck = undefined;
+        needsCheck = false;
+        audio.src = source;
+        audio.load();
+      }
       await audio.play();
       if (!disposed && currentRequest === request && wantsPlay && !audio.paused) emit('playing');
     } catch (error) {
       if (disposed || currentRequest !== request) return;
-      wantsPlay = false;
-      emit(error instanceof Error && error.name === 'AbortError' ? 'paused' : 'error');
+      const checkFailed = Boolean(pendingCheck);
+      pendingCheck = undefined;
+      if (error instanceof Error && error.name === 'AbortError') {
+        wantsPlay = false;
+        emit('paused');
+        return;
+      }
+      fail(error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+        ? error as PlaybackError
+        : { code: checkFailed
+          ? error instanceof Error && error.name === 'TimeoutError' ? 'NETEASE_CHECK_TIMEOUT' : 'NETEASE_CHECK_NETWORK'
+          : error instanceof Error ? error.name : 'MEDIA_PLAYBACK_FAILED' });
     }
   };
   const pause = () => {
     request++;
+    pendingCheck?.abort();
+    pendingCheck = undefined;
     wantsPlay = false;
     audio.pause();
     emit('paused');
   };
   const load = (url: string, autoplay = true, time = 0) => {
     pause();
+    source = url;
+    needsCheck = url.startsWith(NETEASE_STREAM_PATH_PREFIX);
+    reportedError = false;
     pendingSeek = Math.max(0, time);
-    audio.src = url;
+    if (needsCheck) audio.removeAttribute('src');
+    else audio.src = url;
     audio.load();
     if (autoplay) void play();
     else emit('paused');
@@ -61,11 +126,13 @@ export function createAudioPlayback(audio: HTMLAudioElement, onStatus: (status: 
     getPosition: () => pendingSeek ?? Math.max(0, audio.currentTime || 0),
     toggle: () => {
       if (wantsPlay || !audio.paused) pause();
-      else if (audio.error) load(audio.src, true, audio.currentTime);
+      else if (audio.error && source) load(source, true, audio.currentTime);
       else void play();
     },
     clear: () => {
       pause();
+      source = '';
+      needsCheck = false;
       pendingSeek = null;
       audio.removeAttribute('src');
       audio.load();
@@ -74,6 +141,7 @@ export function createAudioPlayback(audio: HTMLAudioElement, onStatus: (status: 
     dispose: () => {
       disposed = true;
       request++;
+      pendingCheck?.abort();
       Object.entries(listeners).forEach(([event, listener]) => audio.removeEventListener(event, listener));
     },
   };

@@ -56,6 +56,7 @@ export function OnboardingGuide({ language, onDismiss, onPrepareStep, visualizer
   useEffect(() => { nextRef.current?.focus(); }, [index]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open][role="alertdialog"]')) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); onDismiss(); }
       else if (event.altKey && event.key === 'ArrowRight') { event.preventDefault(); setIndex(value => Math.min(activeSteps.length - 1, value + 1)); }
       else if (event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); setIndex(value => Math.max(0, value - 1)); }
