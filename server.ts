@@ -220,6 +220,12 @@ const NETEASE_STREAM_REQUEST_TIMEOUT_MS = 5_000;
 const NETEASE_CHECKED_STREAM_TTL_MS = 30_000;
 const NETEASE_CHECKED_STREAM_LIMIT = 32;
 const NETEASE_SONG_DETAIL_BATCH_SIZE = 500;
+const NETEASE_SONG_DETAIL_CONCURRENCY = 3;
+// Paged playlist detail: a small first page renders quickly, later pages stream in.
+const NETEASE_PLAYLIST_DEFAULT_PAGE_SIZE = 200;
+const NETEASE_PLAYLIST_MAX_PAGE_SIZE = 1000;
+const NETEASE_PLAYLIST_TRACK_IDS_TTL_MS = 5 * 60_000;
+const NETEASE_PLAYLIST_TRACK_IDS_LIMIT = 24;
 const NETEASE_STREAM_RESPONSE_HEADERS = ['accept-ranges', 'content-length', 'content-range', 'content-type', 'etag', 'last-modified'] as const;
 
 const asRecord = (value: unknown): Record<string, unknown> | null => (
@@ -1633,6 +1639,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   };
   let neteaseStreamBlockedUntil = 0;
   const checkedStreams = new Map<string, { url: string; cookie: string | null; expires: number }>();
+  const playlistTrackIdCache = new Map<string, { trackIds: string[]; summary: NetEasePlaylistSummary; expiresAt: number }>();
+  const setNetEaseSessionCookie = (cookie: string | null) => {
+    if (cookie !== neteaseSession.cookie) {
+      neteaseSession.cookie = cookie;
+      neteaseSession.account = null;
+      playlistTrackIdCache.clear();
+    }
+  };
 
   const neteaseRequestHandlers: Record<string, NetEaseRequestHandler | undefined> = {
     '/login/status': neteaseApi.login_status,
@@ -1750,17 +1764,17 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
   const fetchNetEaseSongsByTrackIds = async (trackIds: string[]) => {
     const songsById = new Map<string, LibrarySongPayload>();
-
+    const batches: string[][] = [];
     for (let index = 0; index < trackIds.length; index += NETEASE_SONG_DETAIL_BATCH_SIZE) {
-      const batchIds = trackIds.slice(index, index + NETEASE_SONG_DETAIL_BATCH_SIZE);
-      if (batchIds.length === 0) {
-        continue;
-      }
+      batches.push(trackIds.slice(index, index + NETEASE_SONG_DETAIL_BATCH_SIZE));
+    }
 
-      const detailResult = await requestNetEase('/song/detail', {
-        ids: batchIds.join(','),
-      }, { includeTimestamp: true });
+    // Bounded parallelism: large playlists no longer wait on serial round trips.
+    const batchResults = await mapConcurrent(batches, NETEASE_SONG_DETAIL_CONCURRENCY, (batchIds) => (
+      requestNetEase('/song/detail', { ids: batchIds.join(',') }, { includeTimestamp: true })
+    ));
 
+    for (const detailResult of batchResults) {
       for (const entry of getNetEaseSongEntries(detailResult.body)) {
         const songPayload = toNetEaseSongPayload(entry);
         if (!songPayload) {
@@ -1887,7 +1901,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
         return;
       }
 
-      neteaseSession.cookie = sanitizeNetEaseCookie(cookie);
+      setNetEaseSessionCookie(sanitizeNetEaseCookie(cookie));
     }
 
     if (!neteaseSession.cookie) {
@@ -1908,7 +1922,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       // Best-effort upstream logout. Local session is cleared regardless.
     }
 
-    neteaseSession.cookie = null;
+    setNetEaseSessionCookie(null);
     neteaseSession.account = null;
     res.json(getNetEaseSessionPayload());
   });
@@ -1956,7 +1970,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       const cookie = sanitizeNetEaseCookie(body?.cookie);
 
       if (code === 803 && cookie) {
-        neteaseSession.cookie = cookie;
+        setNetEaseSessionCookie(cookie);
         await refreshNetEaseAccount();
       }
 
@@ -2415,9 +2429,43 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     }
   });
 
+  // Track id lists are cached briefly so later pages skip the detail request.
+  const loadPlaylistTrackIds = async (playlistId: string, currentUserId: number, reuse: boolean) => {
+    const cached = playlistTrackIdCache.get(playlistId);
+    if (reuse && cached && cached.expiresAt > Date.now()) {
+      return cached;
+    }
+
+    const cookie = neteaseSession.cookie;
+    const detailResult = await requestNetEase('/playlist/detail', { id: playlistId, s: 0 }, { includeTimestamp: true });
+    if (cookie !== neteaseSession.cookie) {
+      throw new Error('NetEase session changed while loading playlist tracks');
+    }
+    const detailPayload = asRecord(detailResult.body);
+    const detailPlaylist = asRecord(detailPayload?.playlist) ?? asRecord(asRecord(detailPayload?.data)?.playlist);
+    const trackIds = getNetEaseTrackIds(detailPlaylist);
+    const summary = toNetEasePlaylistSummary(detailPlaylist, { currentUserId }) || {
+      id: playlistId,
+      name: 'NetEase Playlist',
+      trackCount: trackIds.length,
+      updatedAt: Date.now(),
+      category: 'created' as const,
+    };
+    const entry = { trackIds, summary, expiresAt: Date.now() + NETEASE_PLAYLIST_TRACK_IDS_TTL_MS };
+    playlistTrackIdCache.delete(playlistId);
+    playlistTrackIdCache.set(playlistId, entry);
+    while (playlistTrackIdCache.size > NETEASE_PLAYLIST_TRACK_IDS_LIMIT) {
+      const oldestKey = playlistTrackIdCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      playlistTrackIdCache.delete(oldestKey);
+    }
+    return entry;
+  };
+
   app.get('/api/netease/playlist/:id', async (req, res) => {
+    const requestCookie = neteaseSession.cookie;
     const account = await getNetEaseAccountOrNull();
-    if (!account) {
+    if (!account || requestCookie !== neteaseSession.cookie) {
       res.status(401).json({ error: 'NetEase login is required' });
       return;
     }
@@ -2425,6 +2473,48 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     const playlistId = req.params.id?.trim();
     if (!playlistId) {
       res.status(400).json({ error: 'Missing NetEase playlist id' });
+      return;
+    }
+
+    // Paged mode (?offset=&limit=): first page carries playlist metadata and total.
+    if (req.query.offset !== undefined || req.query.limit !== undefined) {
+      const offset = Math.max(0, Math.floor(Number(req.query.offset) || 0));
+      const limit = Math.min(
+        NETEASE_PLAYLIST_MAX_PAGE_SIZE,
+        Math.max(1, Math.floor(Number(req.query.limit) || NETEASE_PLAYLIST_DEFAULT_PAGE_SIZE)),
+      );
+
+      try {
+        const { trackIds, summary } = await loadPlaylistTrackIds(playlistId, account.userId, offset > 0);
+        let songs: LibrarySongPayload[];
+        let total = trackIds.length;
+
+        if (trackIds.length > 0) {
+          songs = await fetchNetEaseSongsByTrackIds(trackIds.slice(offset, offset + limit));
+        } else {
+          // Some responses omit trackIds; fall back to the SDK's paged track list.
+          const songsResult = await requestNetEase('/playlist/track/all', { id: playlistId, limit, offset }, { includeTimestamp: true });
+          songs = getNetEaseSongEntries(songsResult.body)
+            .map((entry) => toNetEaseSongPayload(entry))
+            .filter((entry): entry is LibrarySongPayload => Boolean(entry));
+          total = Math.max(summary.trackCount, offset + songs.length);
+        }
+
+        const nextOffset = offset + limit < total ? offset + limit : null;
+        if (requestCookie !== neteaseSession.cookie) {
+          res.status(409).json({ error: 'NetEase session changed while loading playlist tracks' });
+          return;
+        }
+        res.json({
+          playlist: offset === 0 ? { ...summary, trackCount: total || summary.trackCount } : undefined,
+          songs,
+          offset,
+          total,
+          nextOffset,
+        });
+      } catch (error) {
+        res.status(502).json({ error: 'Failed to fetch NetEase playlist details' });
+      }
       return;
     }
 

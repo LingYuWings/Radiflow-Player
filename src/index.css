@@ -45,9 +45,37 @@ body {
 .rf-eq-slider::-webkit-slider-runnable-track { width: 4px; height: 100%; }
 .rf-eq-slider::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; }
 
-/* Animate only the incoming page, never two glass surfaces simultaneously. */
-.rf-home-enter { animation: rf-home-arrive .32s cubic-bezier(.16,1,.3,1); }
-@keyframes rf-home-arrive { from { transform: translateY(10px); } to { transform: none; } }
+/* Card navigation (see src/lib/viewTransition.ts). The old page is a snapshot
+   clipped below the 56px title bar into a rounded card; the new page is live
+   underneath and its surface rises in with a transform-only animation. */
+::view-transition-image-pair(root) { isolation: isolate; }
+/* The new page is always fully opaque underneath and never fades in; only the
+   old snapshot on top animates away. A two-sided cross-fade with mismatched
+   timing lets both layers be partly transparent at once, which flashes the
+   black window background through the whole screen. */
+::view-transition-new(root) { animation: none; mix-blend-mode: normal; opacity: 1; }
+::view-transition-old(root) { z-index: 1; mix-blend-mode: normal; animation: rf-card-fade .18s cubic-bezier(.4, 0, .2, 1) both; }
+:root:is([data-rf-transition='page'], [data-rf-transition='overlay'][data-rf-direction='back'])::view-transition-old(root) {
+  transform-origin: 50% 55%;
+  clip-path: inset(56px 0 0 0 round 28px);
+  animation: rf-card-recede .34s cubic-bezier(.4, 0, .2, 1) both;
+}
+:root:is([data-rf-transition='page'], [data-rf-transition='overlay'])[data-rf-direction='back']::view-transition-old(root) { animation-name: rf-card-drop; animation-duration: .3s; }
+:root[data-rf-transition='overlay'][data-rf-direction='forward']::view-transition-old(root) { animation-duration: .22s; }
+@keyframes rf-card-fade { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; } }
+/* No filter on the snapshot: Chromium paints a filtered transition image white
+   in transparent windows. Opacity reaches zero early so the cards barely overlap. */
+@keyframes rf-card-recede {
+  0% { transform: none; opacity: 1; }
+  70% { opacity: 0; }
+  100% { transform: scale(.92); opacity: 0; }
+}
+@keyframes rf-card-drop {
+  0% { transform: none; opacity: 1; }
+  70% { opacity: 0; }
+  100% { transform: translateY(72px) scale(.95); opacity: 0; }
+}
 
 /* Lyrics share the glass UI's soft white light without adding another panel. */
 .rf-lyric-surface { isolation: isolate; overflow-anchor: none; scroll-behavior: auto; }
@@ -531,3 +559,38 @@ html[data-surface='desktop-lyrics'], html[data-surface='desktop-lyrics'] body { 
 .rf-dl-divider { width: 1px; height: 18px; margin: 0 4px; background: #ffffff26; }
 .rf-dl-unlock { position: absolute; top: 10px; right: 14px; z-index: 2; background: rgb(16 20 24 / .7); box-shadow: inset 0 0 0 1px #ffffff1f; opacity: 0; transition: opacity .2s; }
 .rf-dl-unlock.is-visible { opacity: 1; }
+
+/* ---- Shared surfaces: dialogs, toast, round buttons, panel states ---- */
+.rf-dialog-backdrop { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 0 16px; background: rgb(0 0 0 / .55); }
+.rf-dialog { width: 100%; max-width: 28rem; padding: 24px; border-radius: 28px; border: 1px solid #ffffff1f; background: linear-gradient(150deg, #ffffff12, #ffffff04 45%), rgb(14 18 22 / .94); box-shadow: inset 0 1px 0 #ffffff1f, 0 32px 80px rgb(0 0 0 / .5); }
+.rf-dialog-title { font-family: var(--font-display); font-size: 1.5rem; font-weight: 760; letter-spacing: -0.03em; line-height: 1.2; color: white; }
+.rf-dialog-text { margin-top: 8px; font-size: 14px; line-height: 1.55; color: #ffffff8c; }
+.rf-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.rf-dialog-button { display: inline-flex; align-items: center; justify-content: center; height: 42px; padding: 0 18px; border-radius: 14px; border: 1px solid #ffffff1a; background: #ffffff0d; font-size: 14px; font-weight: 500; color: #ffffffcc; transition: background .18s, border-color .18s, color .18s, transform .18s var(--rf-ease-out); }
+.rf-dialog-button:hover:not(:disabled) { background: #ffffff1a; border-color: #ffffff2b; color: white; }
+.rf-dialog-button:active:not(:disabled) { transform: scale(.97); }
+.rf-dialog-button:disabled { opacity: .4; cursor: default; }
+.rf-dialog-button-primary { border-color: transparent; background: white; color: #111; font-weight: 600; }
+.rf-dialog-button-primary:hover:not(:disabled) { background: #f1f4f6; color: #111; box-shadow: 0 0 0 4px var(--rf-accent-glow); }
+.rf-dialog-button-danger { border-color: transparent; background: rgb(239 68 68 / .9); color: white; font-weight: 600; }
+.rf-dialog-button-danger:hover:not(:disabled) { background: rgb(239 68 68); color: white; }
+.rf-dialog-option { display: block; width: 100%; padding: 12px 16px; border-radius: 16px; border: 1px solid #ffffff14; background: #ffffff0a; text-align: left; transition: background .18s, border-color .18s; }
+.rf-dialog-option:hover { background: #ffffff17; border-color: #ffffff26; }
+.rf-input { width: 100%; height: 46px; padding: 0 16px; border-radius: 14px; border: 1px solid #ffffff1a; background: #ffffff0d; color: white; transition: background .18s, border-color .18s, box-shadow .18s; }
+.rf-input::placeholder { color: #ffffff47; }
+.rf-input:focus { outline: none; background: #ffffff14; border-color: color-mix(in oklch, var(--rf-accent) 40%, #ffffff33); box-shadow: 0 0 0 3px var(--rf-accent-glow); }
+.rf-toast { padding: 10px 16px; border-radius: 16px; border: 1px solid #ffffff1f; background: rgb(14 18 22 / .9); box-shadow: inset 0 1px 0 #ffffff1a, 0 16px 40px rgb(0 0 0 / .4); font-size: 14px; color: #ffffffe6; white-space: nowrap; }
+.rf-round-button { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 1px solid #ffffff1a; background: rgb(255 255 255 / .1); color: #ffffffd9; transition: background .18s, color .18s, transform .18s var(--rf-ease-out); }
+.rf-round-button:hover { background: rgb(255 255 255 / .18); color: white; }
+.rf-round-button:active { transform: scale(.94); }
+.rf-round-button[aria-pressed='true'] { background: rgb(255 255 255 / .2); border-color: #ffffff2e; }
+.rf-panel-state { display: flex; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font-size: 14px; color: #ffffff8c; }
+.rf-panel-state-quiet { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; color: #ffffff40; }
+.rf-spinner { width: 28px; height: 28px; border-radius: 50%; border: 2px solid #ffffff26; border-top-color: #ffffffd9; animation: rf-spin .8s linear infinite; }
+.rf-spinner-sm { width: 12px; height: 12px; border-width: 1.5px; }
+@keyframes rf-spin { to { transform: rotate(360deg); } }
+.rf-chip-progress { gap: 6px; height: 26px; padding: 0 11px; font-variant-numeric: tabular-nums; }
+
+/* Artwork rests slightly smaller while paused; compositor-only transition. */
+.rf-player-artwork { scale: 1; transition: box-shadow .8s, scale .45s cubic-bezier(.16,1,.3,1); }
+.rf-player-artwork[data-resting='true'] { scale: .92; }

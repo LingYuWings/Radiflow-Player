@@ -32,7 +32,9 @@
 ### 2.2 UI 与动画
 
 - Tailwind CSS 4
-- motion/react
+- motion/react（弹层、对话框、共享封面过渡等局部动效）
+- View Transition API（`src/lib/viewTransition.ts`）：页面级导航统一走 `runViewTransition(update, kind, { direction, enter })` 的“卡片”过渡。旧页面是整页快照，在 CSS 中裁掉 56px 标题栏、裁成圆角卡片后后退（进入播放器、打开设置）或下沉（返回）；新页面保持实时渲染，目标表面（`.rf-player-surface`、`.rf-home-layout`、`.rf-overlay-surface`、`.rf-library-content`、`.rf-sidebar-content`、`.rf-player-panel-surface`）用只改 transform 的动画升起到位，预设集中在 `cardEnter`。所有过渡中新页面从第一帧起完整不透明地垫在下层、不做淡入，只让上层的旧快照淡出或退场；不要改回双向交叉淡化，两层时长或曲线不一致时会同时半透明，整窗透出黑色窗口底色（表现为“全屏黑一下”）。另外不要给毛玻璃元素设置 `view-transition-name`（会变成 backdrop root，模糊失效）；快照上不要加 `filter`（透明窗口下会渲染成白色）。快照捕获若 250ms 内未完成，看门狗会跳过过渡并直接应用更新，避免 Chromium 默认 4 秒超时导致界面冻结。不支持、窗口隐藏或开启“减少动态效果”时直接同步更新
+- WebGL（`src/lib/streamerGL.ts`）：流光背景的渐进增强渲染
 - lucide-react
 
 ### 2.3 媒体与音频
@@ -269,6 +271,8 @@ npx electron-builder --win nsis
 - 根据当前封面生成沉浸式背景。
 - blur 模式直接模糊封面。
 - streamer 模式基于 colorthief 提取配色后生成流式背景。
+- streamer 模式优先用 WebGL 单次片元着色绘制（半分辨率、最高 30fps、窗口隐藏时暂停，配色通过 uniform 插值过渡，带轻微流体扰动与抖动去色带）；无硬件 WebGL、软件渲染、上下文丢失或 localStorage `radiflow-player.disable-webgl-background=1` 时回退到原有 DOM 渐变层（服务端渲染与回归测试也走 DOM 路径）。
+- 封面/自定义背景切换为交叉淡化，不再先淡出到黑再淡入。
 
 ### Library.tsx
 
@@ -614,7 +618,9 @@ Electron 的 `app.getPath('userData')` 路径用于跨重启的系统级持久�
 
 #### GET /api/netease/playlist/:id
 
-- 返回指定网易云歌单的完整歌曲列表；若 /playlist/track/all 对特殊歌单返回空列表，则回退到 detail.trackIds + /song/detail 分批补全
+- 不带查询参数时：返回指定网易云歌单的完整歌曲列表（兼容旧调用）；若 /playlist/track/all 对特殊歌单返回空列表，则回退到 detail.trackIds + /song/detail 分批补全
+- 分页模式 `?offset=&limit=`（limit 默认 200，上限 1000）：先取 `/playlist/detail` 的 trackIds，再按区间调用 `/song/detail`（每批 500、最多 3 批并发）。返回 `{ playlist?, songs, offset, total, nextOffset }`，`playlist` 只在 offset=0 时返回；`nextOffset` 为 null 表示已到末尾。trackIds 在服务端内存缓存 5 分钟（最多 24 个歌单），offset=0 的请求总是刷新缓存，因此歌单增删歌曲后强制重载能拿到最新顺序。detail 不含 trackIds 时回退到 `/playlist/track/all` 的分页参数
+- 前端 `useNetEase.loadPlaylist` 使用分页模式：首屏 200 首立即渲染，其余按 500 首一页、2 路并发在后台按顺序追加；加载期间歌单带 `isPartial` 标记，详情页显示“已加载 x / y”。若播放队列是从这个歌单开始且未被改动（同一批歌曲对象、同一顺序），会随后续分页自动补全；被编辑、恢复或插队过的队列不会被改写。单页失败重试一次，仍失败则保留已加载部分并保持 `isPartial`，下次打开时重新加载
 
 #### GET /api/netease/search
 

@@ -51,7 +51,7 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({ analyser
     const draw = (now: number) => {
       if (!analyser || !isPlaying || document.hidden) return;
       frame = requestAnimationFrame(draw);
-      if (now - lastFrame < 1000 / 30) return;
+      if (!gradient || now - lastFrame < 1000 / 30) return; // wait for the first observed size
       const elapsed = Number.isFinite(lastFrame) ? (now - lastFrame) / 1000 : 1 / 30;
       lastFrame = now;
       if (mode === 'waveform') analyser.getByteTimeDomainData(data);
@@ -92,7 +92,9 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({ analyser
       ctx.fill();
     };
     const resume = () => { cancelAnimationFrame(frame); if (!document.hidden) frame = requestAnimationFrame(draw); };
-    resize();
+    // No synchronous resize(): reading clientWidth during mount forced a layout of
+    // the whole freshly committed player. The observer's first callback runs
+    // after layout, before paint.
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
     resume();

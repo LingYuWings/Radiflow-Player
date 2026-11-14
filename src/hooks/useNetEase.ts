@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PlaylistCollection } from '../components/Library';
 import type { LibrarySongPayload, Song } from '../types/player';
+import { mapConcurrent } from '../lib/mapConcurrent';
 
 interface NetEaseAccountSummary {
   userId: number;
@@ -29,7 +30,37 @@ interface NetEasePlaylistSummary {
 interface NetEasePlaylistPayload {
   playlist?: NetEasePlaylistSummary;
   songs?: LibrarySongPayload[];
+  total?: number;
+  nextOffset?: number | null;
 }
+
+// First page is small so the list paints at once; the rest streams in behind it.
+export const NETEASE_PLAYLIST_FIRST_PAGE_SIZE = 200;
+export const NETEASE_PLAYLIST_PAGE_SIZE = 500;
+const NETEASE_PLAYLIST_PAGE_CONCURRENCY = 2;
+
+export const getRemainingPageOffsets = (nextOffset: number | null | undefined, total: number, pageSize = NETEASE_PLAYLIST_PAGE_SIZE) => {
+  const offsets: number[] = [];
+  if (nextOffset === null || nextOffset === undefined || !Number.isFinite(total)) return offsets;
+  for (let offset = Math.max(0, nextOffset); offset < total; offset += pageSize) offsets.push(offset);
+  return offsets;
+};
+
+const fetchPlaylistPage = async (playlistId: string, offset: number, limit: number) => {
+  let lastError: unknown = null;
+  // One retry: a single dropped page should not truncate a long playlist.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(`/api/netease/playlist/${encodeURIComponent(playlistId)}?offset=${offset}&limit=${limit}`);
+      const payload = await response.json() as NetEasePlaylistPayload & { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'Failed to fetch NetEase playlist details');
+      return payload;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Failed to fetch NetEase playlist details');
+};
 
 interface NetEaseMutationPayload {
   success?: boolean;
@@ -144,6 +175,11 @@ export function useNetEase() {
   const [isLoadingPlaylists, setIsLoadingPlaylists] = useState(false);
   const [loadingPlaylistId, setLoadingPlaylistId] = useState<string | null>(null);
   const qrPollTimeoutRef = useRef<number | null>(null);
+  const playlistsRef = useRef(playlists);
+  playlistsRef.current = playlists;
+  // Per playlist: token of the newest load; a newer (forced) load abandons older pages.
+  const playlistLoadTokensRef = useRef(new Map<string, number>());
+  const playlistLoadCounterRef = useRef(0);
 
   const clearQrPoll = useCallback(() => {
     if (qrPollTimeoutRef.current !== null) {
@@ -210,7 +246,7 @@ export function useNetEase() {
       setPlaylists((current) => nextPlaylists.map((playlist) => {
         const existing = current.find((entry) => entry.id === playlist.id);
         return existing
-          ? { ...playlist, songs: existing.songs }
+          ? { ...playlist, songs: existing.songs, isPartial: existing.isPartial }
           : playlist;
       }));
       setStatusMessage(null);
@@ -224,39 +260,106 @@ export function useNetEase() {
     }
   }, [session.isLoggedIn]);
 
+  const loadRemainingPlaylistPages = useCallback(async (
+    playlistId: string,
+    token: number,
+    firstSongs: Song[],
+    offsets: number[],
+  ) => {
+    const isCurrent = () => playlistLoadTokensRef.current.get(playlistId) === token;
+    const accumulated = firstSongs.slice();
+    const pages = new Array<Song[] | undefined>(offsets.length);
+    let flushed = 0;
+
+    const publish = (isPartial: boolean) => {
+      const songs = accumulated.slice();
+      setPlaylists((current) => current.map((playlist) => (
+        playlist.id === playlistId
+          ? { ...playlist, songs, isPartial, trackCount: isPartial ? playlist.trackCount : songs.length }
+          : playlist
+      )));
+    };
+
+    try {
+      await mapConcurrent(offsets.map((offset, index) => ({ offset, index })), NETEASE_PLAYLIST_PAGE_CONCURRENCY, async ({ offset, index }) => {
+        if (!isCurrent()) return;
+        const payload = await fetchPlaylistPage(playlistId, offset, NETEASE_PLAYLIST_PAGE_SIZE);
+        if (!isCurrent()) return;
+        pages[index] = Array.isArray(payload.songs) ? payload.songs.map(toSong) : [];
+        // Append strictly in order so indices stay stable for playback.
+        let advanced = false;
+        while (flushed < pages.length && pages[flushed]) {
+          accumulated.push(...pages[flushed]!);
+          pages[flushed] = undefined;
+          flushed += 1;
+          advanced = true;
+        }
+        if (advanced && flushed < pages.length) publish(true);
+      });
+      if (!isCurrent()) return;
+      publish(false);
+      playlistLoadTokensRef.current.delete(playlistId);
+    } catch (error) {
+      if (!isCurrent()) return;
+      console.error('Failed to load remaining NetEase playlist pages:', error);
+      // Keep what loaded; marking it partial lets the next open retry from scratch.
+      publish(true);
+      playlistLoadTokensRef.current.delete(playlistId);
+      setStatusMessage(error instanceof Error ? error.message : 'Failed to load NetEase playlist');
+    }
+  }, []);
+
   const loadPlaylist = useCallback(async (playlistId: string, options: { force?: boolean } = {}) => {
-    const cachedPlaylist = playlists.find((playlist) => playlist.id === playlistId);
-    if (!options.force && cachedPlaylist && cachedPlaylist.songs.length > 0) {
+    const cachedPlaylist = playlistsRef.current.find((playlist) => playlist.id === playlistId);
+    const isStillLoading = playlistLoadTokensRef.current.has(playlistId);
+    if (!options.force && cachedPlaylist && cachedPlaylist.songs.length > 0 && (!cachedPlaylist.isPartial || isStillLoading)) {
       return cachedPlaylist;
     }
 
+    const token = playlistLoadCounterRef.current + 1;
+    playlistLoadCounterRef.current = token;
+    playlistLoadTokensRef.current.set(playlistId, token);
     setLoadingPlaylistId(playlistId);
     try {
-      const response = await fetch(`/api/netease/playlist/${encodeURIComponent(playlistId)}`);
-      const payload = await response.json() as NetEasePlaylistPayload & { error?: string };
-      if (!response.ok || !payload.playlist) {
-        throw new Error(payload.error || 'Failed to fetch NetEase playlist details');
+      const payload = await fetchPlaylistPage(playlistId, 0, NETEASE_PLAYLIST_FIRST_PAGE_SIZE);
+      if (!payload.playlist) {
+        throw new Error('Failed to fetch NetEase playlist details');
       }
 
-      const nextPlaylist = toPlaylistCollection(
-        payload.playlist,
-        Array.isArray(payload.songs) ? payload.songs.map(toSong) : []
-      );
+      const firstSongs = Array.isArray(payload.songs) ? payload.songs.map(toSong) : [];
+      const total = typeof payload.total === 'number' ? payload.total : firstSongs.length;
+      const remainingOffsets = getRemainingPageOffsets(payload.nextOffset, total);
+      const isPartial = remainingOffsets.length > 0;
+      const nextPlaylist: PlaylistCollection = {
+        ...toPlaylistCollection(payload.playlist, firstSongs),
+        trackCount: isPartial ? total : firstSongs.length,
+        isPartial,
+      };
 
-      setPlaylists((current) => {
-        const remaining = current.filter((playlist) => playlist.id !== nextPlaylist.id);
-        return [...remaining, nextPlaylist].sort((left, right) => right.updatedAt - left.updatedAt);
-      });
+      if (playlistLoadTokensRef.current.get(playlistId) === token) {
+        setPlaylists((current) => {
+          const remaining = current.filter((playlist) => playlist.id !== nextPlaylist.id);
+          return [...remaining, nextPlaylist].sort((left, right) => right.updatedAt - left.updatedAt);
+        });
+        if (isPartial) {
+          void loadRemainingPlaylistPages(playlistId, token, firstSongs, remainingOffsets);
+        } else {
+          playlistLoadTokensRef.current.delete(playlistId);
+        }
+      }
       setStatusMessage(null);
       return nextPlaylist;
     } catch (error) {
+      if (playlistLoadTokensRef.current.get(playlistId) === token) {
+        playlistLoadTokensRef.current.delete(playlistId);
+      }
       console.error('Failed to load NetEase playlist:', error);
       setStatusMessage(error instanceof Error ? error.message : 'Failed to load NetEase playlist');
       return null;
     } finally {
-      setLoadingPlaylistId(null);
+      setLoadingPlaylistId((current) => (current === playlistId ? null : current));
     }
-  }, [playlists]);
+  }, [loadRemainingPlaylistPages]);
 
   const createPlaylist = useCallback(async (name: string, options: { privacy?: string | number | null; type?: string | null } = {}) => {
     if (!session.isLoggedIn) {

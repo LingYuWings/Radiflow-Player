@@ -81,8 +81,9 @@ export function MiniPlayer(props: MiniPlayerProps) {
   // Keep the popup's ancestors opaque: opacity animation creates a backdrop
   // root and prevents the queue glass from sampling the page behind the dock.
   const dockMotion = pageMotion(reducedMotion, 'y', 12);
+  // The page cross-fade already introduces the dock; it no longer slides on mount.
   return <motion.div {...dockMotion}
-    initial={{ y: reducedMotion ? 0 : 12 }} animate={{ y: 0 }}
+    initial={false} animate={{ y: 0 }}
     exit={{ y: reducedMotion ? 0 : 6, transition: dockMotion.exit.transition }}
     style={{ willChange: 'auto' }} className="rf-player-dock rf-glass">
     <div className="rf-dock-row">
