@@ -3,14 +3,14 @@ import { LyricLine } from '../utils/lyricsParser';
 import { lyricWordProgress } from '../lib/lyricProgress';
 import { findActiveLyricIndex, useLyricWordPaint } from '../hooks/useLyricWordPaint';
 import { cn } from '../lib/utils';
-import { useAudioClock } from '../hooks/useAudioClock';
+import { useAudioClock, type AudioClock } from '../hooks/useAudioClock';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { stepAnchoredLyricScroll } from '../lib/lyricScroll';
 
 interface LyricsViewProps {
   lyrics: LyricLine[];
   currentTime: number;
-  audioRef?: React.RefObject<HTMLAudioElement | null>;
+  audioRef?: React.RefObject<AudioClock | null>;
   onSeek?: (time: number) => void;
 }
 

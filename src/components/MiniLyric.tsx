@@ -1,14 +1,14 @@
 import React, { useCallback, useRef } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import type { LyricLine } from '../utils/lyricsParser';
-import { useAudioClock } from '../hooks/useAudioClock';
+import { useAudioClock, type AudioClock } from '../hooks/useAudioClock';
 import { findActiveLyricIndex, useLyricWordPaint } from '../hooks/useLyricWordPaint';
 
 const LINE_EASE = [0.23, 1, 0.32, 1] as const;
 
 type MiniLyricProps = {
   lyrics: LyricLine[];
-  audioRef?: React.RefObject<HTMLAudioElement | null>;
+  audioRef?: React.RefObject<AudioClock | null>;
   currentTime: number;
 };
 

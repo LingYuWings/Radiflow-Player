@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -582,6 +583,15 @@ const originalRegisterXeapiKey = netease.register_xeapikey;
 const originalLoginStatus = netease.login_status;
 const originalPlaylistDetail = netease.playlist_detail;
 const originalSongDetail = netease.song_detail;
+const originalQrKey = netease.login_qr_key;
+const originalQrCheck = netease.login_qr_check;
+const originalLogout = netease.logout;
+const originalLyric = netease.lyric_new;
+const originalSearch = netease.search;
+const originalCloudSearch = netease.cloudsearch;
+const originalArtists = netease.artists;
+const originalArtistAlbums = netease.artist_album;
+const originalAlbum = netease.album;
 const originalNow = Date.now;
 const playbackRequests = [];
 let upstreamMode = 'rejected';
@@ -589,6 +599,33 @@ let nowOffset = 0;
 let keyRequests = 0;
 let playlistDetails = 0;
 const response = body => ({ status: 200, body, cookie: [] });
+let qrStarts = 0;
+let qrChecks = 0;
+let qrCode = 801;
+let logoutCookie;
+netease.login_qr_key = async () => response({ data: { unikey: `qr-${++qrStarts}` } });
+netease.login_qr_check = async () => {
+  qrChecks++;
+  return response({ code: qrCode, ...(qrCode === 803 ? { cookie: 'MUSIC_U=test-page-b' } : {}) });
+};
+netease.logout = async ({ cookie }) => {
+  logoutCookie = cookie;
+  return response({ code: 200 });
+};
+netease.lyric_new = async ({ id }) => response({ lrc: { lyric: `[00:01.00]Track ${id}` } });
+netease.search = async () => response({ result: { songs: [
+  { id: 123, name: 'Fixture', artists: [{ name: 'Artist' }], album: { id: 77, name: 'Album' } },
+] } });
+netease.cloudsearch = netease.search;
+netease.artists = async () => response({ artist: { id: 61, name: 'Artist' } });
+netease.artist_album = async () => response({
+  hotAlbums: [{ id: 77, name: 'Album', artist: { id: 61, name: 'Artist' } }],
+  more: false,
+});
+netease.album = async () => response({
+  album: { id: 77, name: 'Album', artist: { id: 61, name: 'Artist' } },
+  songs: [{ id: 123, name: 'Fixture', ar: [{ id: 61, name: 'Artist' }], al: { id: 77, name: 'Album' } }],
+});
 const isSecondSession = query => query.cookie.includes('MUSIC_U=test-page-b');
 netease.login_status = async query => response({ profile: { userId: isSecondSession(query) ? 2 : 1 } });
 netease.playlist_detail = async query => {
@@ -636,6 +673,84 @@ try {
   const { startServer } = await tsImport('../server.ts', import.meta.url);
   const started = await startServer({ port: 0, host: '127.0.0.1', mode: 'production', initialMusicDir: playbackFixtureDir });
   playbackServer = started.server;
+  const persistedCookies = [];
+  const android = await startServer({
+    port: 0, mode: 'production', initialMusicDir: playbackFixtureDir,
+    android: {
+      token: 'regression-test-token',
+      cookie: 'MUSIC_U=test-android',
+      persistCookie: cookie => persistedCookies.push(cookie),
+    },
+  });
+  try {
+    const headers = { 'X-RadiFlow-Token': 'regression-test-token' };
+    const request = (route, method = 'GET') => fetch(`${android.url}/api/netease/${route}`, { headers, method });
+    const qrCheck = key => request(`login/qr/check?key=${encodeURIComponent(key)}`);
+    const qrStart = () => request('login/qr/start', 'POST').then(result => result.json());
+    assert.equal(android.host, '127.0.0.1');
+    assert.equal((await fetch(`${android.url}/api/netease/search`)).status, 403);
+    assert.equal((await request('search')).status, 400);
+    assert.equal((await fetch(`${android.url}/api/music`, { headers })).status, 404);
+    assert.equal((await request('session', 'POST')).status, 404, 'Android cannot inject a cookie from the renderer');
+    const sessionResponse = await request('session');
+    assert.equal(sessionResponse.status, 200, 'Android can read its session without a renderer-provided cookie');
+    const initialSession = await sessionResponse.json();
+    assert.equal(initialSession.account.userId, 1);
+    assert.equal(initialSession.hasCookie, true);
+    assert.equal(Object.hasOwn(initialSession, 'cookie'), false);
+    const trackLyric = await (await request('lyric/123')).json();
+    assert.equal(trackLyric.data.lrc, '[00:01.00]Track 123');
+    const matchedLyric = await (await request('lyric?title=Fixture&artist=Artist')).json();
+    assert.equal(matchedLyric.data.lrc, '[00:01.00]Track 123');
+    assert.equal((await (await request('search?keywords=Fixture')).json()).songs[0].albumId, '77');
+    const artist = (await (await request('artist/61')).json()).collection;
+    assert.deepEqual(artist.albums, [{ id: '77', name: 'Album', artist: 'Artist' }]);
+    assert.equal(artist.songs[0].albumId, '77');
+    assert.equal((await request('lyric/abc')).status, 404);
+    const androidStream = () => fetch(`${android.url}/api/netease/song/stream/123`, { headers });
+    upstreamMode = 'unavailable';
+    const unavailable = await androidStream();
+    assert.equal(unavailable.status, 404);
+    assert.equal((await unavailable.json()).code, 'NETEASE_TRACK_UNAVAILABLE');
+    upstreamMode = 'preview';
+    const preview = await androidStream();
+    assert.equal(preview.status, 404);
+    assert.equal((await preview.json()).code, 'NETEASE_PREVIEW_ONLY');
+    upstreamMode = 'rejected';
+    assert.equal((await androidStream()).status, 429);
+    assert.match(playbackRequests.at(-1).cookie, /MUSIC_U=test-android/);
+
+    assert.equal((await (await qrCheck('unissued')).json()).code, 800);
+    assert.equal(qrChecks, 0, 'unissued challenges cannot reach NetEase');
+    const expiredQr = await qrStart();
+    assert(expiredQr.qrImage.startsWith('data:image/png;base64,'));
+    assert.equal((await (await qrCheck(expiredQr.key)).json()).code, 801);
+    nowOffset = 181_000;
+    assert.equal((await (await qrCheck(expiredQr.key)).json()).code, 800);
+    assert.equal(qrChecks, 1, 'expired challenges cannot reach NetEase');
+    const supersededQr = await qrStart();
+    const activeQr = await qrStart();
+    assert.equal((await (await qrCheck(supersededQr.key)).json()).code, 800);
+    qrCode = 803;
+    const confirmedQr = await (await qrCheck(activeQr.key)).json();
+    assert.equal(confirmedQr.code, 803);
+    assert.equal(confirmedQr.account.userId, 2);
+    assert.equal(JSON.stringify(confirmedQr).includes('MUSIC_U'), false, 'the native server keeps credentials private');
+    assert.equal(Object.hasOwn(confirmedQr, 'cookie'), false);
+    assert.deepEqual(persistedCookies, ['MUSIC_U=test-page-b']);
+    assert.equal((await (await qrCheck(activeQr.key)).json()).code, 800, 'successful challenges cannot be replayed');
+    const abandonedQr = await qrStart();
+    const signedOut = await (await request('logout', 'POST')).json();
+    assert.equal(signedOut.hasCookie, false);
+    assert.match(logoutCookie, /MUSIC_U=test-page-b/);
+    assert.deepEqual(persistedCookies, ['MUSIC_U=test-page-b', null]);
+    assert.equal((await (await qrCheck(abandonedQr.key)).json()).code, 800, 'logout revokes outstanding challenges');
+    assert.equal((await request('playlists')).status, 401);
+  } finally {
+    await new Promise((resolve, reject) => android.server.close(error => error ? reject(error) : resolve()));
+    playbackRequests.length = 0;
+    nowOffset = 0;
+  }
   const stream = (id, options) => fetch(`${started.url}/api/netease/song/stream/${id}?level=exhigh`, options);
   const check = (id) => fetch(`${started.url}/api/netease/song/stream/${id}?level=exhigh&check=1`);
 
@@ -729,9 +844,52 @@ try {
   netease.login_status = originalLoginStatus;
   netease.playlist_detail = originalPlaylistDetail;
   netease.song_detail = originalSongDetail;
+  netease.login_qr_key = originalQrKey;
+  netease.login_qr_check = originalQrCheck;
+  netease.logout = originalLogout;
+  netease.lyric_new = originalLyric;
+  netease.search = originalSearch;
+  netease.cloudsearch = originalCloudSearch;
+  netease.artists = originalArtists;
+  netease.artist_album = originalArtistAlbums;
+  netease.album = originalAlbum;
   if (playbackServer) await new Promise(resolve => playbackServer.close(resolve));
   fs.unlinkSync(path.join(playbackFixtureDir, 'fixture.mp3'));
   fs.rmdirSync(playbackFixtureDir);
 }
 console.log('PASS NetEase playback: risk cooldown, unavailable tracks, previews, and reuse of a checked stream');
 console.log('PASS NetEase playlist pagination: cached order and session isolation');
+
+const bootstrapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'radiflow-node-test-'));
+const bootstrap = path.join(bootstrapDir, 'bootstrap.mjs');
+const preview = path.join(bootstrapDir, 'preview-cookie');
+const selected = path.join(bootstrapDir, 'selected');
+try {
+  fs.copyFileSync('scripts/android-node-server.mjs', bootstrap);
+  fs.writeFileSync(preview, 'MUSIC_U=synthetic-preview');
+  fs.writeFileSync(path.join(bootstrapDir, 'server.mjs'), `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    export async function startServer({ initialMusicDir, android }) {
+      fs.writeFileSync(path.join(path.dirname(initialMusicDir), 'selected'), android.cookie || '');
+      if (process.argv[5] !== undefined) android.persistCookie(process.argv[5] || null);
+      return { port: 12345 };
+    }
+  `);
+  const restart = (...action) => {
+    execFileSync(process.execPath, [bootstrap, bootstrapDir, 'synthetic-token', preview, ...action]);
+    assert.equal(fs.readFileSync(path.join(bootstrapDir, 'server.port'), 'utf8'), '12345');
+    return fs.readFileSync(selected, 'utf8');
+  };
+  assert.equal(restart('MUSIC_U=synthetic-qr'), 'MUSIC_U=synthetic-preview');
+  assert.equal(restart(''), 'MUSIC_U=synthetic-qr', 'QR credentials take priority on restart');
+  assert.equal(restart(), '', 'logout survives restart even if a debug preview cookie exists');
+} finally {
+  for (const name of ['bootstrap.mjs', 'preview-cookie', 'server.mjs', 'server.port', 'selected', 'netease-session']) {
+    fs.rmSync(path.join(bootstrapDir, name), { force: true });
+  }
+  const nodeTmp = path.join(bootstrapDir, 'tmp');
+  if (fs.existsSync(nodeTmp)) fs.rmdirSync(nodeTmp);
+  fs.rmdirSync(bootstrapDir);
+}
+console.log('PASS Android NetEase: private QR persistence, logout across process restarts, online lyrics, and collection browsing');

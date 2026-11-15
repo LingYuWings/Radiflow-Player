@@ -5,7 +5,7 @@ import type { Server } from "http";
 import { parseFile } from "music-metadata";
 import { createRequire } from "module";
 import { tmpdir } from "node:os";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -65,6 +65,7 @@ interface LibrarySongPayload {
   title: string;
   artist: string;
   album?: string;
+  albumId?: string;
   cover?: string;
   duration?: number;
 }
@@ -166,6 +167,7 @@ interface StartServerOptions {
   mode?: 'development' | 'production';
   staticRoot?: string;
   initialMusicDir?: string;
+  android?: { token: string; cookie?: string; persistCookie?: (cookie: string | null) => void };
 }
 
 interface StartedServer {
@@ -216,6 +218,7 @@ const DEFAULT_NETEASE_AUDIO_LEVEL = 'exhigh';
 const NETEASE_AUDIO_LEVEL_PRIORITY = ['jymaster', 'sky', 'dolby', 'jyeffect', 'hires', 'lossless', 'exhigh', 'higher', 'standard'] as const;
 const NETEASE_FALLBACK_BITRATES = [320000, 192000, 128000] as const;
 const NETEASE_STREAM_COOLDOWN_MS = 60_000;
+const ANDROID_NETEASE_QR_TTL_MS = 180_000;
 const NETEASE_STREAM_REQUEST_TIMEOUT_MS = 5_000;
 const NETEASE_CHECKED_STREAM_TTL_MS = 30_000;
 const NETEASE_CHECKED_STREAM_LIMIT = 32;
@@ -392,8 +395,8 @@ const getNetEaseSizedImageUrl = (value?: string | null) => {
   return `${value}${separator}param=320y320`;
 };
 
-const getNetEaseArtistName = (value: unknown) => {
-  const artists = Array.isArray(value) ? value : [];
+const getNetEaseArtistName = (value: unknown, includeSingleArtist = false) => {
+  const artists = Array.isArray(value) ? value : includeSingleArtist ? [value] : [];
   const names = artists
     .map((entry) => getStringValue(asRecord(entry)?.name))
     .filter((entry): entry is string => Boolean(entry?.trim()))
@@ -463,7 +466,7 @@ const toNetEasePlaylistSummary = (
   };
 };
 
-const toNetEaseSongPayload = (value: unknown): LibrarySongPayload | null => {
+const toNetEaseSongPayload = (value: unknown, includeAlbumId: boolean): LibrarySongPayload | null => {
   const track = asRecord(value);
   const songId = getStringValue(track?.id);
   const title = getStringValue(track?.name)?.trim();
@@ -481,6 +484,7 @@ const toNetEaseSongPayload = (value: unknown): LibrarySongPayload | null => {
     title,
     artist: getNetEaseArtistName(track?.ar ?? track?.artists),
     album: getStringValue(album?.name) || undefined,
+    ...(includeAlbumId ? { albumId: getStringValue(album?.id ?? album?.idStr) || undefined } : {}),
     cover: getNetEaseSizedImageUrl(getStringValue(album?.picUrl) || getStringValue(track?.picUrl)),
     duration: durationMs ? durationMs / 1000 : undefined,
   };
@@ -652,7 +656,7 @@ const toNetEaseSearchHintItem = (value: unknown, kind: 'song' | 'artist' | 'play
   };
 };
 
-const toNetEaseSearchAlbumItem = (value: unknown) => {
+const toNetEaseSearchAlbumItem = (value: unknown, includeSingleArtist = false) => {
   const record = asRecord(value);
   const id = getStringValue(record?.id ?? record?.idStr);
   const name = getStringValue(record?.name)?.trim();
@@ -663,7 +667,7 @@ const toNetEaseSearchAlbumItem = (value: unknown) => {
   return {
     id,
     name,
-    artist: getNetEaseArtistName(record?.artists ?? record?.artist),
+    artist: getNetEaseArtistName(record?.artists ?? record?.artist, includeSingleArtist),
     cover: getNetEaseSizedImageUrl(
       getStringValue(record?.picUrl)
       || getStringValue(record?.blurPicUrl)
@@ -970,7 +974,8 @@ const getLyricDatabase = (musicDir: string) => {
 
   ensureDirectory(getLyricCacheDirectory(musicDir));
 
-  const database = new DatabaseSync(getLyricCacheDatabaseFilePath(musicDir));
+  const { DatabaseSync: SqliteDatabase } = require('node:sqlite') as typeof import('node:sqlite');
+  const database = new SqliteDatabase(getLyricCacheDatabaseFilePath(musicDir));
   database.exec(`
     CREATE TABLE IF NOT EXISTS lyric_cache (
       association_key TEXT PRIMARY KEY,
@@ -1626,25 +1631,53 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   const requestedPort = typeof options.port === 'number' && Number.isFinite(options.port)
     ? options.port
     : portFromEnv;
-  const PORT = Number.isFinite(requestedPort) ? requestedPort : 3000;
-  const host = options.host ?? '0.0.0.0';
+  const android = options.android;
+  const PORT = android ? 0 : Number.isFinite(requestedPort) ? requestedPort : 3000;
+  const host = android ? '127.0.0.1' : options.host ?? '0.0.0.0';
   const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development');
   const staticRoot = options.staticRoot ?? process.cwd();
 
   // Serve music directory
   let musicDir = options.initialMusicDir ?? path.join(process.cwd(), 'music');
   let neteaseSession: NetEaseSessionState = {
-    cookie: sanitizeNetEaseCookie(process.env.NETEASE_API_COOKIE),
+    cookie: sanitizeNetEaseCookie(android ? android.cookie : process.env.NETEASE_API_COOKIE),
     account: null,
   };
+  let neteaseSessionRevision = 0;
+  let neteaseQrChallenge: { key: string; expiresAt: number } | null = null;
   let neteaseStreamBlockedUntil = 0;
+  const toOnlineSongPayload = (entry: unknown) => toNetEaseSongPayload(entry, Boolean(android));
   const checkedStreams = new Map<string, { url: string; cookie: string | null; expires: number }>();
   const playlistTrackIdCache = new Map<string, { trackIds: string[]; summary: NetEasePlaylistSummary; expiresAt: number }>();
+  if (android) {
+    app.use((req, res, next) => {
+      if (req.get('X-RadiFlow-Token') !== android.token) {
+        res.status(403).end();
+        return;
+      }
+      const route = req.path;
+      const allowed =
+        (req.method === 'GET' &&
+          /^\/api\/netease\/(?:session|playlists|login\/qr\/check|search(?:\/(?:default|hot(?:\/detail)?|suggest|multimatch))?|lyric|(?:album|artist|playlist|lyric|song\/stream)\/\d+)$/.test(route)) ||
+        (req.method === 'POST' &&
+          /^\/api\/netease\/(?:logout|login\/qr\/start|playlists(?:\/\d+\/tracks)?)$/.test(route)) ||
+        (req.method === 'DELETE' && /^\/api\/netease\/playlists\/\d+$/.test(route));
+      if (!allowed) {
+        res.status(404).json({ error: 'Unsupported Android NetEase endpoint' });
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      next();
+    });
+  }
   const setNetEaseSessionCookie = (cookie: string | null) => {
+    android?.persistCookie?.(cookie);
     if (cookie !== neteaseSession.cookie) {
       neteaseSession.cookie = cookie;
       neteaseSession.account = null;
+      neteaseSessionRevision++;
       playlistTrackIdCache.clear();
+      if (android) checkedStreams.clear();
     }
   };
 
@@ -1700,6 +1733,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
     const requestPayload = Object.fromEntries(
       Object.entries({
+        ...(android ? { timeout: 12_000 } : {}),
         ...params,
         ...(options.includeTimestamp ? { timestamp: Date.now() } : {}),
         ...(options.randomCNIP ? { randomCNIP: true } : {}),
@@ -1721,19 +1755,22 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       return null;
     }
 
+    const requestRevision = neteaseSessionRevision;
     try {
       const statusResult = await requestNetEase('/login/status');
+      if (android && requestRevision !== neteaseSessionRevision) return null;
       let nextAccount = toNetEaseAccountSummary(statusResult.body);
 
       if (!nextAccount) {
         const accountResult = await requestNetEase('/user/account');
+        if (android && requestRevision !== neteaseSessionRevision) return null;
         nextAccount = toNetEaseAccountSummary(accountResult.body);
       }
 
       neteaseSession.account = nextAccount;
       return nextAccount;
     } catch {
-      neteaseSession.account = null;
+      if (!android || requestRevision === neteaseSessionRevision) neteaseSession.account = null;
       return null;
     }
   };
@@ -1776,7 +1813,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
     for (const detailResult of batchResults) {
       for (const entry of getNetEaseSongEntries(detailResult.body)) {
-        const songPayload = toNetEaseSongPayload(entry);
+        const songPayload = toOnlineSongPayload(entry);
         if (!songPayload) {
           continue;
         }
@@ -1914,6 +1951,22 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   });
 
   app.post('/api/netease/logout', async (req, res) => {
+    if (android) {
+      const cookie = getNetEaseRequestCookie(neteaseSession.cookie);
+      neteaseQrChallenge = null;
+      try {
+        setNetEaseSessionCookie(null);
+      } catch {
+        res.status(500).json({ error: 'Failed to clear the NetEase session on this device' });
+        return;
+      }
+      if (cookie) {
+        await requestNetEase('/logout', { cookie, timeout: 5_000 }, { includeCookie: false }).catch(() => {});
+      }
+      res.json(getNetEaseSessionPayload());
+      return;
+    }
+
     try {
       if (neteaseSession.cookie) {
         await requestNetEase('/logout');
@@ -1928,6 +1981,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   });
 
   app.post('/api/netease/login/qr/start', async (req, res) => {
+    const challenge = android ? { key: '', expiresAt: 0 } : null;
+    if (challenge) neteaseQrChallenge = challenge;
     try {
       const keyResult = await requestNetEase('/login/qr/key', {}, { includeCookie: false });
       const qrKey = getStringValue(asRecord(asRecord(keyResult.body)?.data)?.unikey)
@@ -1943,6 +1998,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
         qrimg: true,
       }, { includeCookie: false });
       const qrData = asRecord(asRecord(qrResult.body)?.data);
+      if (challenge) {
+        if (neteaseQrChallenge !== challenge) {
+          res.status(409).json({ error: 'NetEase QR login was superseded' });
+          return;
+        }
+        challenge.key = qrKey;
+        challenge.expiresAt = Date.now() + ANDROID_NETEASE_QR_TTL_MS;
+      }
 
       res.json({
         key: qrKey,
@@ -1961,6 +2024,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       return;
     }
 
+    const challenge = neteaseQrChallenge;
+    const expiredQr = { code: 800, message: 'NetEase QR code expired' };
+    if (android && (!challenge || challenge.key !== qrKey || challenge.expiresAt <= Date.now())) {
+      if (challenge?.key === qrKey) neteaseQrChallenge = null;
+      res.json(expiredQr);
+      return;
+    }
+
     try {
       const qrResult = await requestNetEase('/login/qr/check', {
         key: qrKey,
@@ -1968,6 +2039,18 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       const body = asRecord(qrResult.body);
       const code = getNumberValue(body?.code) || 500;
       const cookie = sanitizeNetEaseCookie(body?.cookie);
+
+      if (challenge) {
+        if (neteaseQrChallenge !== challenge || challenge.expiresAt <= Date.now()) {
+          res.json(expiredQr);
+          return;
+        }
+        if (code === 800 || code === 803) neteaseQrChallenge = null;
+        if (code === 803 && !cookie) {
+          res.status(502).json({ error: 'NetEase did not return a login session' });
+          return;
+        }
+      }
 
       if (code === 803 && cookie) {
         setNetEaseSessionCookie(cookie);
@@ -1980,7 +2063,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
         hasCookie: Boolean(cookie),
         isLoggedIn: Boolean(code === 803 && neteaseSession.account),
         account: neteaseSession.account,
-        cookie: code === 803 ? cookie : null,
+        ...(android ? {} : { cookie: code === 803 ? cookie : null }),
       });
     } catch (error) {
       res.status(502).json({ error: 'Failed to verify NetEase QR login state' });
@@ -2071,13 +2154,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
         offset: getNumberValue(req.query.offset) || 0,
       }, { includeCookie: false });
       const songs = getNetEaseSearchSongEntries(result.body)
-        .map((entry) => toNetEaseSongPayload(entry))
+        .map(toOnlineSongPayload)
         .filter((entry): entry is LibrarySongPayload => Boolean(entry));
       const artists = getNetEaseSearchArtistEntries(result.body)
         .map((entry) => toNetEaseSearchHintItem(entry, 'artist'))
         .filter((entry): entry is NonNullable<ReturnType<typeof toNetEaseSearchHintItem>> => Boolean(entry));
       const albums = getNetEaseSearchAlbumEntries(result.body)
-        .map((entry) => toNetEaseSearchAlbumItem(entry))
+        .map((entry) => toNetEaseSearchAlbumItem(entry, Boolean(android)))
         .filter((entry): entry is NonNullable<ReturnType<typeof toNetEaseSearchAlbumItem>> => Boolean(entry));
       const resultPayload = asRecord(asRecord(result.body)?.result) ?? asRecord(asRecord(asRecord(result.body)?.data)?.result);
       res.json({
@@ -2106,7 +2189,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       const result = await requestNetEase('/album', { id: albumId }, { includeCookie: false });
       const albumRecord = getNetEaseAlbumDetailRecord(result.body);
       const songs = getNetEaseCollectionSongEntries(result.body)
-        .map((entry) => toNetEaseSongPayload(entry))
+        .map(toOnlineSongPayload)
         .filter((entry): entry is LibrarySongPayload => Boolean(entry));
       const albumName = getStringValue(albumRecord?.name)?.trim();
 
@@ -2120,7 +2203,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
           id: albumId,
           type: 'album',
           name: albumName,
-          artist: getNetEaseArtistName(albumRecord?.artists ?? albumRecord?.artist ?? albumRecord?.ar),
+          artist: getNetEaseArtistName(albumRecord?.artists ?? albumRecord?.artist ?? albumRecord?.ar, Boolean(android)),
           cover: getNetEaseSizedImageUrl(
             getStringValue(albumRecord?.picUrl)
             || getStringValue(albumRecord?.blurPicUrl)
@@ -2207,7 +2290,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
             });
             return getNetEaseCollectionSongEntries(albumResult.body)
               .filter((albumSong) => isNetEaseTrackLedByArtist(albumSong, artistId))
-              .map((albumSong) => toNetEaseSongPayload(albumSong))
+              .map(toOnlineSongPayload)
               .filter((albumSong): albumSong is LibrarySongPayload => Boolean(albumSong));
           } catch {
             return [] as LibrarySongPayload[];
@@ -2221,7 +2304,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
       if (songsById.size === 0) {
         getNetEaseCollectionSongEntries(artistResult.body, ['songs', 'hotSongs'])
-          .map((entry) => toNetEaseSongPayload(entry))
+          .map(toOnlineSongPayload)
           .filter((entry): entry is LibrarySongPayload => Boolean(entry))
           .forEach((entry) => {
             songsById.set(entry.filename, entry);
@@ -2242,6 +2325,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
           ),
           songCount: songs.length,
           songs,
+          ...(android ? {
+            albums: artistAlbumEntries.map((entry) => toNetEaseSearchAlbumItem(entry, true)).filter(Boolean),
+          } : {}),
         },
       });
     } catch {
@@ -2387,6 +2473,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
       await requestNetEase('/playlist/delete', {
         id: playlistId,
       }, { includeTimestamp: true });
+      if (android) playlistTrackIdCache.delete(playlistId);
       res.json({ success: true });
     } catch {
       res.status(502).json({ error: 'Failed to delete NetEase playlist' });
@@ -2422,6 +2509,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
         pid: playlistId,
         tracks: trackIds.join(','),
       }, { includeTimestamp: true });
+      if (android) playlistTrackIdCache.delete(playlistId);
 
       res.json({ success: true, op, trackIds });
     } catch {
@@ -2495,7 +2583,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
           // Some responses omit trackIds; fall back to the SDK's paged track list.
           const songsResult = await requestNetEase('/playlist/track/all', { id: playlistId, limit, offset }, { includeTimestamp: true });
           songs = getNetEaseSongEntries(songsResult.body)
-            .map((entry) => toNetEaseSongPayload(entry))
+            .map(toOnlineSongPayload)
             .filter((entry): entry is LibrarySongPayload => Boolean(entry));
           total = Math.max(summary.trackCount, offset + songs.length);
         }
@@ -2546,7 +2634,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
           ? asRecord(songsPayload?.playlist)?.tracks as unknown[]
           : [];
       let songs = songEntries
-        .map((entry) => toNetEaseSongPayload(entry))
+        .map(toOnlineSongPayload)
         .filter((entry): entry is LibrarySongPayload => Boolean(entry));
 
       if (songs.length === 0 && detailTrackIds.length > 0) {
@@ -2748,6 +2836,34 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   // 1. SQLite remote cache
   // 2. remote provider fetch
   // 3. same-name manual lyric file fallback
+  if (android) {
+    app.get(['/api/netease/lyric', '/api/netease/lyric/:id'], async (req, res) => {
+      const title = typeof req.query.title === 'string' ? req.query.title.trim() : '';
+      const artist = typeof req.query.artist === 'string' ? req.query.artist.trim() : '';
+      const id = req.params.id;
+      if (!id && (!title || !artist)) {
+        res.status(400).json({ code: 400, error: 'Missing title or artist' });
+        return;
+      }
+      try {
+        let songId = id;
+        if (!songId) {
+          const result = await requestNetEase('/search', {
+            keywords: `${title} ${artist}`,
+            type: 1,
+            limit: 10,
+          }, { includeCookie: false });
+          const match = getBestNetEaseLyricSearchMatch(getNetEaseSearchSongEntries(result.body), title, artist);
+          songId = getStringValue(asRecord(match)?.id);
+        }
+        const data = songId ? await fetchNetEaseLyricPayload(songId) : null;
+        res.json({ code: 200, data, source: id ? 'netease' : 'netease-search' });
+      } catch {
+        res.status(502).json({ code: 502, error: 'Failed to fetch NetEase lyrics' });
+      }
+    });
+  }
+
   app.get('/api/lyrics', async (req, res) => {
     const title = typeof req.query.title === 'string' ? req.query.title.trim() : '';
     const artist = typeof req.query.artist === 'string' ? req.query.artist.trim() : '';
@@ -2911,14 +3027,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
   // Development and production share the same API surface. Only the renderer
   // asset source changes between Vite middleware and built static files.
-  if (mode !== 'production') {
+  if (!android && mode !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!android) {
     const distPath = path.join(staticRoot, 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {

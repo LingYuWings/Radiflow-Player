@@ -1,0 +1,75 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "com.radiflow.player"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.radiflow.player"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "0.6.2"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    sourceSets {
+        main {
+            assets.srcDir layout.buildDirectory.dir('generated/embeddedNodeAssets')
+            jniLibs.srcDir rootProject.file('.node-runtime/jniLibs')
+        }
+    }
+}
+
+def embeddedNode = tasks.register('packageEmbeddedNode', Zip) {
+    def projectFiles = rootProject.file('.node-runtime/project')
+    from projectFiles
+    destinationDirectory = layout.buildDirectory.dir('generated/embeddedNodeAssets')
+    archiveFileName = 'radiflow-node.zip'
+    doFirst {
+        if (!new File(projectFiles, 'server.mjs').isFile()) {
+            throw new GradleException('Run npm run build:android before assembling the APK.')
+        }
+    }
+}
+tasks.named('preBuild') { dependsOn embeddedNode }
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    implementation "androidx.media3:media3-exoplayer:1.11.1"
+    implementation "androidx.media3:media3-session:1.11.1"
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import type { RefObject } from 'react';
 import type { LyricLine } from '../utils/lyricsParser';
 import { lyricWordGlow, lyricWordProgress } from '../lib/lyricProgress';
+import type { AudioClock } from './useAudioClock';
 
 /** Index of the line whose time window contains `time`, or -1 before the first line. */
 export function findActiveLyricIndex(lyrics: LyricLine[], time: number): number {
@@ -16,7 +17,7 @@ export function findActiveLyricIndex(lyrics: LyricLine[], time: number): number 
 export function useLyricWordPaint(
   lineRef: RefObject<HTMLElement | null>,
   line: LyricLine | undefined,
-  audioRef: RefObject<HTMLAudioElement | null> | undefined,
+  audioRef: RefObject<AudioClock | null> | undefined,
   timeRef: RefObject<number>,
 ) {
   useEffect(() => {

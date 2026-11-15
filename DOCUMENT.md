@@ -155,6 +155,28 @@ npx electron-builder --win nsis
 
 ---
 
+## 4.4 Android 播放器
+
+手机布局采用单列曲库和触控列表。导入入口放在曲库标题栏，播放后底部显示迷你播放条。点击歌曲信息打开全屏播放器，队列在同一屏内切换。系统返回键依次关闭队列、返回曲库，再将应用退到后台。
+
+Android 构建使用 `src/android/` 入口。系统文件选择器通过 Storage Access Framework 提供音频 URI，应用保存 URI 的读取授权和曲目元数据。Media3 `MediaSessionService` 持有播放队列和进度，系统媒体通知可以控制播放。
+
+Android 共用桌面的流光、封面配色、歌词滚动和逐字动效、迷你播放器歌词及均衡器曲线算法。手机均衡器使用十条全宽触控滑杆。Media3 同时管理本地与在线队列、后台播放、音量、随机、循环及十段音效，并提供 PCM 频谱和波形。播放会话按暂停状态恢复，本地曲库支持专辑、歌手、本地歌单和收藏。
+
+网易云搜索、账号、在线歌单和歌词由 APK 内嵌的 Node.js 提供。登录入口在 Android 的设置页，扫码凭据由内嵌服务存入应用私有目录。服务监听随机的本机回环端口，原生请求携带每次启动生成的令牌。Media3 在读取在线音频前复用桌面播放预检。调试包可从应用私有目录的 `no_backup/radiflow-node/preview-cookie` 读取测试 Cookie。
+
+使用 Node.js 24、JDK 21、Android SDK 36 和 NDK `28.2.13676358` 构建调试包。设置 `ANDROID_HOME` 指向 SDK，或用 `ANDROID_NDK_HOME` 指定独立的 NDK 目录。首次构建会下载并校验固定版本的 Node.js Mobile 运行库。Gradle Wrapper 在 `android/` 中，输出为 `android/app/build/outputs/apk/debug/app-debug.apk`。
+
+```powershell
+npm ci
+npm run build:android
+Push-Location android
+.\gradlew.bat :app:assembleDebug
+Pop-Location
+```
+
+`npm run dev:android` 可在浏览器预览手机布局，导入和原生播放需要 Android 应用。
+
 ## 5. 目录结构
 
 ```text

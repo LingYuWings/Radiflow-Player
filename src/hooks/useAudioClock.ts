@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 
+export type AudioClock = Pick<HTMLAudioElement, 'currentTime' | 'paused' | 'ended' | 'addEventListener' | 'removeEventListener'>;
+
 const identity = (time: number) => time;
 // Subscribe at the consumer: a playback tick must not rerender the entire library.
-export function useAudioClock(audioRef: RefObject<HTMLAudioElement | null> | undefined, fallback: number, select = identity) {
+export function useAudioClock(audioRef: RefObject<AudioClock | null> | undefined, fallback: number, select = identity) {
   const selector = useRef(select);
   selector.current = select;
   const [value, setValue] = useState(() => select(audioRef?.current?.currentTime ?? fallback));
