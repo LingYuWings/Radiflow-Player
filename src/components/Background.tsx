@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 // @ts-ignore
 import { getPalette } from 'colorthief';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
+import { createStreamerRenderer, type StreamerRenderer } from '../lib/streamerGL';
 
 interface BackgroundProps {
   imageSrc?: string;
@@ -18,6 +19,15 @@ interface StreamerPaletteState {
 }
 
 const DEFAULT_STREAMER_COLORS = ['rgb(82, 82, 82)', 'rgb(38, 38, 38)'];
+const DISABLE_WEBGL_STORAGE_KEY = 'radiflow-player.disable-webgl-background';
+
+const isWebGLBackgroundAllowed = () => {
+  try {
+    return window.localStorage.getItem(DISABLE_WEBGL_STORAGE_KEY) !== '1';
+  } catch {
+    return true;
+  }
+};
 const STREAMER_PALETTE_COLOR_COUNT = 10;
 const STREAMER_PALETTE_QUALITY = 5;
 const STREAMER_PALETTE_MIN_SATURATION = 0.04;
@@ -219,6 +229,42 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
   ]);
   const paletteRequestIdRef = useRef(0);
   const isUsingCustomBackground = Boolean(customBackground?.imageSrc);
+  const isReducedMotion = Boolean(reducedMotion);
+  const isStreamerActive = !isUsingCustomBackground && !transparentBackground && effect === 'streamer';
+  const streamerCanvasRef = useRef<HTMLCanvasElement>(null);
+  const streamerRendererRef = useRef<StreamerRenderer | null>(null);
+  const [isStreamerGLActive, setIsStreamerGLActive] = useState(false);
+  const latestStreamerColors = streamerLayers.at(-1)?.colors ?? DEFAULT_STREAMER_COLORS;
+  const latestStreamerColorsRef = useRef(latestStreamerColors);
+  latestStreamerColorsRef.current = latestStreamerColors;
+
+  // WebGL light flow replaces the DOM blob layers when a hardware context exists;
+  // the DOM layers stay as the server-rendered and fallback path.
+  useEffect(() => {
+    const canvas = streamerCanvasRef.current;
+    if (!isStreamerActive || !canvas || !isWebGLBackgroundAllowed()) return;
+    const renderer = createStreamerRenderer(canvas, ACTIVE_BLOB_CONFIGS, {
+      reducedMotion: isReducedMotion,
+      speedMultiplier: STREAMER_SPEED_MULTIPLIER,
+      onContextLost: () => {
+        streamerRendererRef.current = null;
+        setIsStreamerGLActive(false);
+      },
+    });
+    if (!renderer) return;
+    renderer.setPalette(latestStreamerColorsRef.current, false);
+    streamerRendererRef.current = renderer;
+    setIsStreamerGLActive(true);
+    return () => {
+      renderer.dispose();
+      if (streamerRendererRef.current === renderer) streamerRendererRef.current = null;
+      setIsStreamerGLActive(false);
+    };
+  }, [isStreamerActive, isReducedMotion]);
+
+  useEffect(() => {
+    streamerRendererRef.current?.setPalette(latestStreamerColors, true);
+  }, [latestStreamerColors, isStreamerGLActive]);
 
   useEffect(() => {
     // Palette also feeds the UI accent, so extract it in every background mode.
@@ -298,7 +344,7 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
       style={{ clipPath: 'inset(0 round 24px)' }}
     >
       {isUsingCustomBackground ? (
-        <AnimatePresence mode="wait">
+        <AnimatePresence initial={false}>
           <motion.div
             key={customBackgroundKey}
             initial={{ opacity: 0 }}
@@ -316,13 +362,13 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
           </motion.div>
         </AnimatePresence>
       ) : transparentBackground ? null : effect === 'blur' ? (
-        <AnimatePresence mode="wait">
+        <AnimatePresence initial={false}>
           <motion.div
             key={blurBackgroundKey}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 1.5 }}
+            transition={{ duration: 1.2, ease: 'easeInOut' }}
             className="absolute inset-0"
           >
             <div
@@ -333,8 +379,14 @@ export const Background: React.FC<BackgroundProps> = ({ imageSrc, effect, custom
         </AnimatePresence>
       ) : (
         <div className="absolute inset-0" style={{ backgroundColor: DEFAULT_STREAMER_COLORS[1] }}>
+          <canvas
+            ref={streamerCanvasRef}
+            aria-hidden="true"
+            className="absolute inset-0 h-full w-full"
+            style={{ display: isStreamerGLActive ? 'block' : 'none' }}
+          />
           <AnimatePresence initial={false}>
-            {streamerLayers.map((layer) => (
+            {!isStreamerGLActive && streamerLayers.map((layer) => (
               <motion.div
                 key={layer.key}
                 className="absolute inset-0"

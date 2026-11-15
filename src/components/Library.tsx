@@ -1,6 +1,6 @@
 import React, { createContext, useContext, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'motion/react';
-import { animatePageArrival, PAGE_ENTER_EASE, PAGE_TRANSITION } from '../lib/pageMotion';
+import { PAGE_ENTER_EASE, PAGE_TRANSITION } from '../lib/pageMotion';
 import { ChevronLeft, CirclePlay, Disc, Heart, LayoutGrid, List, ListPlus, Music, Play, Plus, Search, Trash2, User, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AppLanguage } from '../lib/copy';
@@ -23,6 +23,8 @@ export interface PlaylistCollection {
   playlistCategory?: 'created' | 'followed';
   cover?: string;
   trackCount?: number;
+  /** Set while later pages of a large online playlist are still streaming in. */
+  isPartial?: boolean;
 }
 
 export type LibrarySection = 'playlists' | 'all' | 'artists' | 'albums' | 'search' | 'favoriteSongs' | 'favoriteAlbums';
@@ -233,8 +235,9 @@ const LIST_VIRTUALIZATION_THRESHOLD = 80;
 const GRID_VIRTUALIZATION_THRESHOLD = 120;
 const OVERLAY_EASE = PAGE_ENTER_EASE;
 const OVERLAY_PANEL_TRANSITION = PAGE_TRANSITION;
-const OVERLAY_CONTENT_TRANSITION = { ...PAGE_TRANSITION, duration: 0.26 };
-const OVERLAY_RETURN_DELAY = 0.06;
+// One fade for the overlay plus one short rise for its panel; no staged delays.
+const OVERLAY_FADE_IN = { type: 'tween' as const, duration: 0.22, ease: PAGE_ENTER_EASE };
+const OVERLAY_FADE_OUT = { type: 'tween' as const, duration: 0.16, ease: [0.4, 0, 1, 1] as const };
 const SHARED_ARTWORK_TRANSITION = { layout: PAGE_TRANSITION };
 const ONLINE_SEARCH_HISTORY_STORAGE_KEY = 'radiflow-player.netease-search-history';
 
@@ -286,6 +289,8 @@ const getBestAlbumSearchMatch = (
   return items[0] ?? null;
 };
 
+const EMPTY_SONGS: Song[] = [];
+
 const matchesQuery = (song: Song, query: string) => {
   const keyword = query.trim().toLowerCase();
   if (!keyword) return true;
@@ -300,6 +305,17 @@ const sortSongs = (left: Song, right: Song) => left.title.localeCompare(right.ti
 const getPlaylistCategory = (playlist: PlaylistCollection): PlaylistCategoryFilter => (
   playlist.playlistCategory === 'followed' ? 'followed' : 'created'
 );
+
+// Intl formatters are costly to construct; one per language is reused by every card.
+const playlistDateFormats = new Map<AppLanguage, Intl.DateTimeFormat>();
+const getPlaylistDateFormat = (language: AppLanguage) => {
+  let format = playlistDateFormats.get(language);
+  if (!format) {
+    format = new Intl.DateTimeFormat(language === 'zh-CN' ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    playlistDateFormats.set(language, format);
+  }
+  return format;
+};
 
 const formatPlaylistUpdatedAt = (updatedAt: number, language: AppLanguage) => {
   if (!updatedAt) {
@@ -330,11 +346,7 @@ const formatPlaylistUpdatedAt = (updatedAt: number, language: AppLanguage) => {
     return language === 'zh-CN' ? `${value} 天前` : `${value} day${value === 1 ? '' : 's'} ago`;
   }
 
-  return new Intl.DateTimeFormat(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  }).format(updatedAt);
+  return getPlaylistDateFormat(language).format(updatedAt);
 };
 
 const collectionCopy = {
@@ -528,10 +540,7 @@ const SongCardComponent: React.FC<{
   unfavoriteLabel,
   onNavigateToArtist,
 }) => (
-  <motion.div
-    initial={animated ? { opacity: 0, y: 20 } : false}
-    animate={{ opacity: 1, y: 0 }}
-    transition={animated ? { ...PAGE_TRANSITION, delay: Math.min(index * 0.015, 0.12) } : undefined}
+  <div
     className="group relative flex flex-col gap-2.5"
     style={gridItemRenderStyle}
   >
@@ -596,10 +605,18 @@ const SongCardComponent: React.FC<{
         </button>
       </div>
     </div>
-  </motion.div>
+  </div>
 );
 
 const SongCard = memo(SongCardComponent);
+
+// Plain element unless the artwork morphs into a detail overlay; motion
+// components carry measurable per-mount cost in long grids.
+const ArtworkFrame: React.FC<{ layoutId?: string; className: string; children: React.ReactNode }> = ({ layoutId, className, children }) => (
+  layoutId
+    ? <motion.div layoutId={layoutId} transition={SHARED_ARTWORK_TRANSITION} className={className}>{children}</motion.div>
+    : <div className={className}>{children}</div>
+);
 
 const CollectionCardComponent: React.FC<{
   title: string;
@@ -626,19 +643,12 @@ const CollectionCardComponent: React.FC<{
   unfavoriteLabel,
   onToggleFavorite,
 }) => (
-  <motion.div
-    initial={{ opacity: 0, y: 20 }}
-    animate={{ opacity: 1, y: 0 }}
-    transition={{ ...PAGE_TRANSITION, delay: Math.min(index * 0.015, 0.12) }}
+  <div
     className="group relative flex flex-col gap-2.5 text-left"
     style={gridItemRenderStyle}
   >
     <button type="button" onClick={onOpen} className="text-left">
-      <motion.div
-        layoutId={artworkLayoutId}
-        transition={artworkLayoutId ? SHARED_ARTWORK_TRANSITION : undefined}
-        className="rf-card-art aspect-square rounded-[1.1rem] overflow-hidden bg-white/5 relative border border-white/6"
-      >
+      <ArtworkFrame layoutId={artworkLayoutId} className="rf-card-art aspect-square rounded-[1.1rem] overflow-hidden bg-white/5 relative border border-white/6">
         {cover ? (
           <img src={cover} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" loading="lazy" decoding="async" referrerPolicy="no-referrer" />
         ) : (
@@ -647,7 +657,7 @@ const CollectionCardComponent: React.FC<{
           </div>
         )}
         <div className="absolute inset-0 bg-linear-to-t from-black/70 via-transparent to-transparent opacity-60" />
-      </motion.div>
+      </ArtworkFrame>
       <div className="mt-2.5 min-w-0 px-0.5">
         <h3 className="text-[13px] leading-tight font-semibold text-white truncate">{title}</h3>
         <p className="mt-1 text-[11px] text-white/55 truncate">{subtitle}</p>
@@ -669,7 +679,7 @@ const CollectionCardComponent: React.FC<{
         <Heart size={15} fill={isFavorite ? 'currentColor' : 'none'} />
       </button>
     )}
-  </motion.div>
+  </div>
 );
 
 const CollectionCard = memo(CollectionCardComponent);
@@ -703,10 +713,7 @@ const SongListItemComponent: React.FC<{
   onRemove,
   onNavigateToArtist,
 }) => (
-  <motion.div
-    initial={animated ? { opacity: 0, y: 8 } : false}
-    animate={{ opacity: 1, y: 0 }}
-    transition={animated ? { ...PAGE_TRANSITION, delay: Math.min(index * 0.012, 0.1) } : undefined}
+  <div
     className={cn('rf-library-row group', isActive && 'rf-library-row-active')}
     style={listItemRenderStyle}
     tabIndex={0}
@@ -774,7 +781,7 @@ const SongListItemComponent: React.FC<{
         </button>
       )}
     </div>
-  </motion.div>
+  </div>
 );
 
 const SongListItem = memo((props: React.ComponentProps<typeof SongListItemComponent>) => {
@@ -1152,10 +1159,6 @@ export const Library: React.FC<LibraryProps> = ({
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const reducedPageMotion = useReducedMotion();
-  useEffect(() => {
-    const animation = animatePageArrival(scrollContainerRef.current, Boolean(reducedPageMotion));
-    return () => animation?.cancel();
-  }, [section, displayedPlaylist?.id, reducedPageMotion]);
   const playlistDetailScrollRef = useRef<HTMLDivElement>(null);
   const artistOverlayScrollRef = useRef<HTMLDivElement>(null);
   const albumOverlayScrollRef = useRef<HTMLDivElement>(null);
@@ -1760,10 +1763,19 @@ export const Library: React.FC<LibraryProps> = ({
   }, [deferredSearchQuery, onlineFavoriteAlbums]);
 
   const filteredAllSongs = useMemo(() => allSongs.filter((song) => matchesQuery(song, deferredSearchQuery)), [allSongs, deferredSearchQuery]);
-  const filteredPlaylistSongs = useMemo(
-    () => (displayedPlaylist?.songs || []).filter((song) => matchesQuery(song, deferredSearchQuery)),
-    [displayedPlaylist, deferredSearchQuery]
-  );
+  // An empty filter keeps the playlist's own array, so row index == playlist index.
+  const filteredPlaylistSongs = useMemo(() => {
+    const playlistSongs = displayedPlaylist?.songs || EMPTY_SONGS;
+    return deferredSearchQuery.trim() ? playlistSongs.filter((song) => matchesQuery(song, deferredSearchQuery)) : playlistSongs;
+  }, [displayedPlaylist, deferredSearchQuery]);
+  // O(1) row -> playlist index for filtered views (was a findIndex per visible row).
+  const playlistSongIndex = useMemo(() => {
+    const index = new Map<Song, number>();
+    if (filteredPlaylistSongs !== displayedPlaylist?.songs) {
+      displayedPlaylist?.songs.forEach((song, position) => { if (!index.has(song)) index.set(song, position); });
+    }
+    return index;
+  }, [displayedPlaylist, filteredPlaylistSongs]);
   const visiblePlaylists = useMemo(() => {
     const categoryFiltered = playlists.filter((playlist) => getPlaylistCategory(playlist) === playlistCategoryFilter);
     const keyword = deferredSearchQuery.trim().toLowerCase();
@@ -2135,13 +2147,10 @@ export const Library: React.FC<LibraryProps> = ({
             <EmptyState icon={<Music size={28} />} title={copy.emptyPlaylists} subtitle={copy.playlistSubtitle} />
           ) : (
             <div className="rf-cover-grid pb-4">
-              {visiblePlaylists.map((playlist, index) => (
-                <motion.button
+              {visiblePlaylists.map((playlist) => (
+                <button
                   key={playlist.id}
                   type="button"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ ...PAGE_TRANSITION, delay: Math.min(index * 0.015, 0.12) }}
                   onClick={() => onOpenPlaylist(playlist.id)}
                   className="rf-cover-card group"
                   title={playlist.name}
@@ -2159,7 +2168,7 @@ export const Library: React.FC<LibraryProps> = ({
                   <span className="mt-0.5 block truncate text-left text-xs text-white/50">
                     {copy.songs(playlist.trackCount ?? playlist.songs.length)} · {formatPlaylistUpdatedAt(playlist.updatedAt, language)}
                   </span>
-                </motion.button>
+                </button>
               ))}
             </div>
           )}
@@ -2167,8 +2176,10 @@ export const Library: React.FC<LibraryProps> = ({
       );
     }
 
-    const playlistCover = displayedPlaylist.cover || displayedPlaylist.songs[0]?.cover;
     const updatedLabel = formatPlaylistUpdatedAt(displayedPlaylist.updatedAt, language);
+    const getOriginalIndex = (song: Song, index: number) => (
+      filteredPlaylistSongs === displayedPlaylist.songs ? index : (playlistSongIndex.get(song) ?? -1)
+    );
 
     if (isPlaylistDetailLoading) {
       return (
@@ -2184,16 +2195,26 @@ export const Library: React.FC<LibraryProps> = ({
 
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {renderPlaylistHero(displayedPlaylist, displayedPlaylist.songs.length, updatedLabel, (
-          <button
-            type="button"
-            onClick={onPlaySelectedPlaylist}
-            disabled={displayedPlaylist.songs.length === 0}
-            className="rf-primary-button"
-          >
-            <Play size={17} fill="currentColor" />
-            {copy.playPlaylist}
-          </button>
+        {renderPlaylistHero(displayedPlaylist, displayedPlaylist.isPartial ? (displayedPlaylist.trackCount ?? displayedPlaylist.songs.length) : displayedPlaylist.songs.length, updatedLabel, (
+          <>
+            <button
+              type="button"
+              onClick={onPlaySelectedPlaylist}
+              disabled={displayedPlaylist.songs.length === 0}
+              className="rf-primary-button"
+            >
+              <Play size={17} fill="currentColor" />
+              {copy.playPlaylist}
+            </button>
+            {displayedPlaylist.isPartial && (
+              <span role="status" className="rf-chip rf-chip-progress">
+                <span className="rf-spinner rf-spinner-sm" aria-hidden="true" />
+                {language === 'zh-CN'
+                  ? `已加载 ${displayedPlaylist.songs.length} / ${displayedPlaylist.trackCount ?? '…'}`
+                  : `Loaded ${displayedPlaylist.songs.length} of ${displayedPlaylist.trackCount ?? '…'}`}
+              </span>
+            )}
+          </>
         ))}
 
         {renderPlaylistSongsPanel(
@@ -2207,25 +2228,24 @@ export const Library: React.FC<LibraryProps> = ({
               return (
                 <VirtualSongList
                   songs={filteredPlaylistSongs}
-                  scrollContainerRef={playlistDetailScrollRef}
+                  // The detail page scrolls with the library viewport (its own panel
+                  // is unconstrained there), so the window must measure that scroller.
+                  scrollContainerRef={scrollContainerRef}
                   addLabel={copy.addToPlaylist}
                   favoriteLabel={copy.addToFavorites}
                   getKey={(song, index) => `${song.title}-${song.artist}-${index}`}
-                  getIsActive={(song) => {
-                    const originalIndex = displayedPlaylist.songs.findIndex((item) => item.file === song.file && item.title === song.title && item.artist === song.artist);
-                    return currentPlaybackPlaylistId === displayedPlaylist.id && currentPlaybackIndex === originalIndex;
-                  }}
+                  getIsActive={(song, index) => (
+                    currentPlaybackPlaylistId === displayedPlaylist.id && currentPlaybackIndex === getOriginalIndex(song, index)
+                  )}
                   getIsFavorite={(song) => favoriteSongIds.has(getNetEaseSongIdFromSong(song) || '')}
-                  onPlaySong={(song) => {
-                    const originalIndex = displayedPlaylist.songs.findIndex((item) => item.file === song.file && item.title === song.title && item.artist === song.artist);
-                    onPlaySongs(displayedPlaylist.songs, originalIndex, displayedPlaylist.id);
+                  onPlaySong={(song, index) => {
+                    onPlaySongs(displayedPlaylist.songs, getOriginalIndex(song, index), displayedPlaylist.id);
                   }}
                   onToggleFavoriteSong={displayedPlaylist.source === 'netease' ? (song) => { void toggleSongFavorite(song); } : undefined}
                   onNavigateToArtist={displayedPlaylist.source === 'netease' ? (song) => requestArtistNavigation(song.artist) : undefined}
                   onRemoveSong={canRemoveSongs
-                    ? (song) => {
-                      const originalIndex = displayedPlaylist.songs.findIndex((item) => item.file === song.file && item.title === song.title && item.artist === song.artist);
-                      onRemoveSongFromPlaylist(song, originalIndex);
+                    ? (song, index) => {
+                      onRemoveSongFromPlaylist(song, getOriginalIndex(song, index));
                     }
                     : undefined}
                   unfavoriteLabel={copy.removeFromFavorites}
@@ -2585,8 +2605,8 @@ export const Library: React.FC<LibraryProps> = ({
         <motion.div
           key={`album-overlay-${activeAlbumGroup.key}`}
           initial={{ opacity: 0 }}
-          animate={{ opacity: 1, transition: { duration: 0.26 } }}
-          exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY + 0.1, duration: 0.24 } }}
+          animate={{ opacity: 1, transition: OVERLAY_FADE_IN }}
+          exit={{ opacity: 0, transition: OVERLAY_FADE_OUT }}
           className="absolute inset-0 z-40 p-4 md:p-6"
         >
           {overlayBackground && (
@@ -2627,9 +2647,9 @@ export const Library: React.FC<LibraryProps> = ({
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.22, ease: OVERLAY_EASE } }}
+            initial={{ y: 14 }}
+            animate={{ y: 0 }}
+            exit={{ y: 8, transition: OVERLAY_FADE_OUT }}
             transition={OVERLAY_PANEL_TRANSITION}
             className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/35 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-8"
           >
@@ -2637,13 +2657,7 @@ export const Library: React.FC<LibraryProps> = ({
               <div className="absolute inset-0 bg-linear-to-br from-white/10 via-black/12 to-black/36" />
             </div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.18, ease: OVERLAY_EASE } }}
-              transition={{ delay: 0.04, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative flex flex-col gap-5"
-            >
+            <div className="relative flex flex-col gap-5">
               <div className="flex items-center justify-between gap-4">
                 <button
                   type="button"
@@ -2680,15 +2694,9 @@ export const Library: React.FC<LibraryProps> = ({
                   </div>
                 </div>
               </div>
-            </motion.div>
+            </div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 18, scale: 0.995 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8, transition: { duration: 0.12 } }}
-              transition={{ delay: 0.12, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl"
-            >
+            <div className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl">
               <div ref={albumOverlayScrollRef} className="h-full overflow-y-auto overflow-x-hidden rf-scroll px-1 py-1">
                 {detailSongs.length === 0 ? (
                   <EmptyState icon={<Disc size={28} />} title={copy.emptySongs} />
@@ -2705,7 +2713,7 @@ export const Library: React.FC<LibraryProps> = ({
                   />
                 )}
               </div>
-            </motion.div>
+            </div>
           </motion.div>
         </motion.div>
         )}
@@ -2724,8 +2732,8 @@ export const Library: React.FC<LibraryProps> = ({
         <motion.div
           key={`artist-overlay-${activeArtistGroup.key}`}
           initial={{ opacity: 0 }}
-          animate={{ opacity: 1, transition: { duration: 0.26 } }}
-          exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY + 0.1, duration: 0.24 } }}
+          animate={{ opacity: 1, transition: OVERLAY_FADE_IN }}
+          exit={{ opacity: 0, transition: OVERLAY_FADE_OUT }}
           className="absolute inset-0 z-40 p-4 md:p-6"
         >
           {overlayBackground && (
@@ -2766,9 +2774,9 @@ export const Library: React.FC<LibraryProps> = ({
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.22, ease: OVERLAY_EASE } }}
+            initial={{ y: 14 }}
+            animate={{ y: 0 }}
+            exit={{ y: 8, transition: OVERLAY_FADE_OUT }}
             transition={OVERLAY_PANEL_TRANSITION}
             className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/35 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-8"
           >
@@ -2776,13 +2784,7 @@ export const Library: React.FC<LibraryProps> = ({
               <div className="absolute inset-0 bg-linear-to-br from-white/10 via-black/12 to-black/36" />
             </div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.18, ease: OVERLAY_EASE } }}
-              transition={{ delay: 0.04, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative flex flex-col gap-5"
-            >
+            <div className="relative flex flex-col gap-5">
               <div className="flex items-center justify-between gap-4">
                 <button
                   type="button"
@@ -2823,15 +2825,9 @@ export const Library: React.FC<LibraryProps> = ({
                   </div>
                 </div>
               </div>
-            </motion.div>
+            </div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 18, scale: 0.995 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8, transition: { duration: 0.12 } }}
-              transition={{ delay: 0.12, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl"
-            >
+            <div className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl">
               <div ref={artistOverlayScrollRef} className="h-full overflow-y-auto overflow-x-hidden rf-scroll px-1 py-1">
                 {detailSongs.length === 0 ? (
                   <EmptyState icon={<User size={28} />} title={copy.emptySongs} />
@@ -2848,7 +2844,7 @@ export const Library: React.FC<LibraryProps> = ({
                   />
                 )}
               </div>
-            </motion.div>
+            </div>
           </motion.div>
         </motion.div>
         )}
@@ -2872,8 +2868,8 @@ export const Library: React.FC<LibraryProps> = ({
         <motion.div
           key={`online-detail-overlay-${onlineDetailState.type}-${onlineDetailState.id}`}
           initial={{ opacity: 0 }}
-          animate={{ opacity: 1, transition: { duration: 0.26 } }}
-          exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY + 0.1, duration: 0.24 } }}
+          animate={{ opacity: 1, transition: OVERLAY_FADE_IN }}
+          exit={{ opacity: 0, transition: OVERLAY_FADE_OUT }}
           className="absolute inset-0 z-40 p-4 md:p-6"
         >
           {overlayBackground && (
@@ -2914,9 +2910,9 @@ export const Library: React.FC<LibraryProps> = ({
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.22, ease: OVERLAY_EASE } }}
+            initial={{ y: 14 }}
+            animate={{ y: 0 }}
+            exit={{ y: 8, transition: OVERLAY_FADE_OUT }}
             transition={OVERLAY_PANEL_TRANSITION}
             className="relative flex h-full flex-col gap-6 overflow-visible rounded-[2.1rem] border border-white/10 bg-black/35 p-6 shadow-[0_40px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-8"
           >
@@ -2924,13 +2920,7 @@ export const Library: React.FC<LibraryProps> = ({
               <div className="absolute inset-0 bg-linear-to-br from-white/10 via-black/12 to-black/36" />
             </div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, transition: { delay: OVERLAY_RETURN_DELAY, duration: 0.18, ease: OVERLAY_EASE } }}
-              transition={{ delay: 0.04, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative flex flex-col gap-5"
-            >
+            <div className="relative flex flex-col gap-5">
               <div className="flex items-center justify-between gap-4">
                 <button
                   type="button"
@@ -2977,15 +2967,9 @@ export const Library: React.FC<LibraryProps> = ({
                   </div>
                 </div>
               </div>
-            </motion.div>
+            </div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 18, scale: 0.995 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8, transition: { duration: 0.12 } }}
-              transition={{ delay: 0.12, ...OVERLAY_CONTENT_TRANSITION }}
-              className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl"
-            >
+            <div className="relative z-10 min-h-0 flex-1 overflow-hidden rounded-2xl">
               <div ref={onlineDetailOverlayScrollRef} className="h-full overflow-y-auto overflow-x-hidden rf-scroll px-1 py-1">
                 {isOnlineDetailLoading ? (
                   <EmptyState icon={isAlbumDetail ? <Disc size={28} /> : <User size={28} />} title={copy.loadingDetail} />
@@ -3009,7 +2993,7 @@ export const Library: React.FC<LibraryProps> = ({
                   />
                 )}
               </div>
-            </motion.div>
+            </div>
           </motion.div>
         </motion.div>
         )}

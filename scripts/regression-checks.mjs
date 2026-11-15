@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { buildSync } from 'esbuild';
+import { tsImport } from 'tsx/esm/api';
 const require = createRequire(import.meta.url);
 const load = (filename, extra = '', overrides = {}) => {
   const contents = fs.readFileSync(filename, 'utf8') + extra;
@@ -49,6 +51,39 @@ player.load('unavailable'); audio.requests[2].reject(new Error('network')); awai
 player.clear(); assert.equal(audio.src, ''); assert.equal(states.at(-1), 'idle');
 const beforeDispose = states.length; player.dispose(); audio.dispatchEvent(new Event('error')); assert.equal(states.length, beforeDispose);
 console.log('PASS playback: restore, buffering, cancel, failure, stale requests, cleanup');
+
+const cloudAudio = new Audio();
+const checks = [];
+const playbackErrors = [];
+const cloudPlayer = createAudioPlayback(cloudAudio, (_status, error) => {
+  if (error) playbackErrors.push(error);
+}, (_url, signal) => new Promise((resolve, reject) => checks.push({ signal, resolve, reject })));
+cloudPlayer.load('/api/netease/song/stream/1', false, 27);
+assert.equal(cloudAudio.src, '', 'restoring a cloud song must defer loading its stream');
+assert.equal(checks.length, 0, 'startup must not check a paused cloud song');
+cloudPlayer.toggle();
+assert.equal(checks.length, 1);
+assert.equal(cloudAudio.requests.length, 0, 'do not call play until the check succeeds');
+cloudPlayer.load('/api/netease/song/stream/2');
+assert.equal(checks[0].signal.aborted, true);
+checks[0].reject(new Error('obsolete check failed'));
+await Promise.resolve();
+assert.equal(playbackErrors.length, 0, 'a replaced track cannot show a stale error');
+const copyrightError = { code: 'NETEASE_TRACK_UNAVAILABLE', httpStatus: 404 };
+checks[1].reject(copyrightError);
+await Promise.resolve();
+assert.deepEqual(playbackErrors, [copyrightError]);
+assert.equal(cloudAudio.requests.length, 0);
+cloudPlayer.toggle();
+checks[2].resolve();
+await Promise.resolve();
+assert.equal(cloudAudio.src, '/api/netease/song/stream/2');
+assert.equal(cloudAudio.requests.length, 1, 'the track can play after a successful check');
+cloudAudio.requests[0].reject(new DOMException('Format failure', 'NotSupportedError'));
+await Promise.resolve();
+assert.equal(playbackErrors.at(-1).code, 'NotSupportedError', 'media failures include a diagnostic code');
+cloudPlayer.dispose();
+console.log('PASS playback checks: deferred cloud restore, cancellation, retry, and error details');
 const { createPlaybackFeedback, hasPlaybackIntent } = load('src/lib/playbackFeedback.ts');
 const feedback = createPlaybackFeedback();
 const feedbackStates = [];
@@ -347,6 +382,17 @@ const { playbackAction, PlaybackStatusLine } = load('src/components/PlaybackStat
 assert.equal(playbackAction('buffering', true, 'zh-CN'), '暂停');
 assert.equal(playbackAction('error', false, 'zh-CN'), '重试播放');
 assert(renderToStaticMarkup(React.createElement(PlaybackStatusLine, { status: 'error', language: 'en-US' })).includes('Playback failed'));
+const { PlaybackErrorDialog } = load('src/components/PlaybackErrorDialog.tsx');
+const unavailableDialog = renderToStaticMarkup(React.createElement(PlaybackErrorDialog, {
+  track: 'Unavailable track', error: copyrightError, language: 'zh-CN', onDismiss() {},
+}));
+assert(unavailableDialog.includes('role="alertdialog"') && unavailableDialog.includes('Unavailable track'));
+assert(unavailableDialog.includes('可能无版权') && unavailableDialog.includes('HTTP 404'));
+const riskDialog = renderToStaticMarkup(React.createElement(PlaybackErrorDialog, {
+  track: 'Cloud track', error: { code: 'NETEASE_RISK_CONTROL', httpStatus: 429, retryAfter: 60 },
+  language: 'en-US', onDismiss() {},
+}));
+assert(riskDialog.includes('Wait at least 60 seconds') && riskDialog.includes('NETEASE_RISK_CONTROL'));
 console.log('PASS iteration A: disjoint buffered ranges, source reset, deduplicated updates, listener cleanup, single-commit scrubbing and shared playback feedback');
 
 let queueEffect, queueDependencies;
@@ -422,3 +468,270 @@ for (const target of new Set(guideTargets)) {
 assert(guideSource.includes('pointer-events-none') && guideSource.includes('aria-modal="false"'), 'guided controls must remain interactive');
 assert(playerStyles.includes('rf-guide-spotlight') && playerStyles.includes('border: 2px dashed') && playerStyles.includes('backdrop-filter: blur(30px)'), 'tour uses dashed glass spotlight');
 console.log('PASS onboarding: every tour target is anchored, controls remain interactive, glass spotlight exists');
+
+{
+  const flushCalls = [];
+  const { runViewTransition, canUseViewTransition, playCardEnter, cardEnter } = load('src/lib/viewTransition.ts', '', { 'react-dom': { flushSync: fn => { flushCalls.push(1); fn(); } } });
+  let applied = 0;
+  runViewTransition(() => applied++);
+  assert.equal(applied, 1, 'without the API the update runs synchronously, once');
+  const finished = Promise.withResolvers();
+  const started = [];
+  const fakeDocument = {
+    visibilityState: 'visible',
+    documentElement: { dataset: {} },
+    startViewTransition: update => { started.push(update); return { finished: finished.promise, skipTransition() {} }; },
+  };
+  globalThis.document = fakeDocument;
+  globalThis.window = { matchMedia: () => ({ matches: false }), setTimeout, clearTimeout };
+  try {
+    assert.equal(canUseViewTransition(), true);
+    runViewTransition(() => applied++, 'page', { direction: 'back' });
+    assert.equal(applied, 1, 'the update waits for the old snapshot');
+    assert.equal(fakeDocument.documentElement.dataset.rfTransition, 'page');
+    assert.equal(fakeDocument.documentElement.dataset.rfDirection, 'back');
+    started[0](); started[0]();
+    assert.equal(applied, 2, 'the update is applied exactly once inside flushSync');
+    assert.equal(flushCalls.length, 1);
+    finished.resolve(); await finished.promise; await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(fakeDocument.documentElement.dataset.rfTransition, undefined, 'transition marker is cleared');
+    assert.equal(fakeDocument.documentElement.dataset.rfDirection, undefined);
+    const played = [];
+    const surface = { getAnimations: () => [], animate: (frames, options) => { played.push({ frames, options }); return {}; } };
+    playCardEnter(cardEnter.player, { querySelector: () => surface });
+    assert.equal(played.length, 1);
+    assert(played[0].frames.every(frame => Object.keys(frame).join() === 'transform'), 'card entry animates transform only, so glass keeps its backdrop');
+    assert.equal(played[0].frames.at(-1).transform, 'none');
+    assert.deepEqual(playCardEnter(cardEnter.player, { querySelector: () => null }), [], 'missing surfaces are skipped');
+    globalThis.window = { matchMedia: () => ({ matches: true }), setTimeout, clearTimeout };
+    runViewTransition(() => applied++);
+    assert.equal(applied, 3, 'reduced motion skips the transition');
+    assert.equal(started.length, 1);
+    // Watchdog: a stalled snapshot capture must not freeze navigation.
+    const stalled = Promise.withResolvers();
+    let skipped = 0;
+    fakeDocument.startViewTransition = () => ({ finished: stalled.promise, skipTransition: () => { skipped++; } });
+    globalThis.window = { matchMedia: () => ({ matches: false }), setTimeout, clearTimeout };
+    const beforeStall = applied;
+    runViewTransition(() => applied++, 'section');
+    assert.equal(applied, beforeStall, 'update waits for the capture');
+    await new Promise(resolve => setTimeout(resolve, 320));
+    assert.equal(applied, beforeStall + 1, 'watchdog applies the update when capture stalls');
+    assert.equal(skipped, 1, 'and skips the stalled transition');
+    stalled.resolve();
+    fakeDocument.visibilityState = 'hidden';
+    globalThis.window = { matchMedia: () => ({ matches: false }) };
+    assert.equal(canUseViewTransition(), false, 'hidden windows update without capturing snapshots');
+  } finally {
+    delete globalThis.document;
+    delete globalThis.window;
+  }
+  const appSource = fs.readFileSync('src/App.tsx', 'utf8');
+  assert(!appSource.includes("mode=\"wait\""), 'page swaps never wait for an exit before the next page appears');
+  assert(!appSource.includes('pageMotion('), 'page-level live opacity animation is replaced by snapshot cross-fades');
+  const librarySource = fs.readFileSync('src/components/Library.tsx', 'utf8');
+  assert(!/delay: Math\.min\(index/.test(librarySource), 'grid and list items do not stagger in');
+  assert(!librarySource.includes('displayedPlaylist.songs.findIndex'), 'playlist rows resolve indices in O(1)');
+  const css = fs.readFileSync('src/index.css', 'utf8');
+  assert(css.includes('clip-path: inset(56px 0 0 0 round 28px)'), 'the outgoing card leaves the title bar in place');
+  const cardKeyframes = css.match(/@keyframes rf-card-(recede|drop) \{[\s\S]*?\n\}/g) || [];
+  assert.equal(cardKeyframes.length, 2);
+  assert(cardKeyframes.every(rule => !rule.includes('filter')), 'transition snapshots are never filtered (renders white in transparent windows)');
+  assert(!/view-transition-name/.test(css + appSource), 'no glass surface is captured as a separate (backdrop-root) group');
+  // Every transition: the new page is opaque from the first frame and only the
+  // old snapshot animates. A two-sided cross-fade dims the whole window.
+  const newRootRules = [...css.matchAll(/([^{}]*::view-transition-new\(root\)[^{}]*)\{([^}]*)\}/g)];
+  assert(newRootRules.length > 0);
+  assert(newRootRules.every(([, selector, body]) => /animation:\s*none/.test(body) || /prefers-reduced-motion/.test(selector)), 'the incoming page never fades in');
+  assert(!/::view-transition-new\(root\)\s*\{[^}]*animation-duration/.test(css), 'no separate fade timing for the incoming page');
+  console.log('PASS card transitions: one-shot update, direction markers, transform-only entry, title bar kept, fallback, reduced motion');
+}
+
+{
+  const { parseCssColor, blobOffsetAt } = load('src/lib/streamerGL.ts');
+  const near = (actual, expected) => actual.every((value, index) => Math.abs(value - expected[index]) < 0.01);
+  assert(near(parseCssColor('rgb(38, 38, 38)'), [38 / 255, 38 / 255, 38 / 255]));
+  assert(near(parseCssColor('hsl(0 100% 50%)'), [1, 0, 0]));
+  assert(near(parseCssColor('hsl(210 30% 72%)'), [0.636, 0.72, 0.804]));
+  assert(near(parseCssColor('#336699'), [0.2, 0.4, 0.6]));
+  assert.equal(parseCssColor('transparent'), null);
+  const blob = { left: '10%', top: '20%', size: 65, opacity: .85, duration: 100, phase: 0, xKeys: [0, 100, -50, 20, 0], yKeys: [0, 40, 80, -10, 0] };
+  assert.deepEqual(blobOffsetAt(blob, 0, 1), [0, 0]);
+  assert(near(blobOffsetAt(blob, 25, 1), [100, 40]), 'keyframe 25% matches the CSS path');
+  assert(near(blobOffsetAt(blob, 50, 1), [-50, 80]));
+  assert(near(blobOffsetAt(blob, 100, 1), [0, 0]), 'the loop closes without a seam');
+  assert(near(blobOffsetAt({ ...blob, phase: 25 }, 0, 1), [100, 40]), 'phase acts as a negative delay');
+  const bgSource = fs.readFileSync('src/components/Background.tsx', 'utf8');
+  assert(!bgSource.includes('mode="wait"'), 'background swaps cross-fade instead of dipping to black');
+  console.log('PASS WebGL light flow: CSS color parsing, keyframe parity, closed loops, cross-faded swaps');
+}
+
+{
+  const { getRemainingPageOffsets } = load('src/hooks/useNetEase.ts', '', { react: { useCallback: f => f, useEffect() {}, useRef: v => ({ current: v }), useState: v => [v, () => {}] } });
+  assert.deepEqual(getRemainingPageOffsets(200, 1150, 500), [200, 700]);
+  assert.deepEqual(getRemainingPageOffsets(200, 200, 500), []);
+  assert.deepEqual(getRemainingPageOffsets(null, 5000, 500), []);
+  assert.equal(getRemainingPageOffsets(200, 10200, 500).length, 20);
+  console.log('PASS playlist paging: remaining page plan for large playlists');
+}
+
+const netease = require('@neteasecloudmusicapienhanced/api');
+const originalSongUrl = netease.song_url_v1;
+const originalLegacySongUrl = netease.song_url;
+const originalRegisterXeapiKey = netease.register_xeapikey;
+const originalLoginStatus = netease.login_status;
+const originalPlaylistDetail = netease.playlist_detail;
+const originalSongDetail = netease.song_detail;
+const originalNow = Date.now;
+const playbackRequests = [];
+let upstreamMode = 'rejected';
+let nowOffset = 0;
+let keyRequests = 0;
+let playlistDetails = 0;
+const response = body => ({ status: 200, body, cookie: [] });
+const isSecondSession = query => query.cookie.includes('MUSIC_U=test-page-b');
+netease.login_status = async query => response({ profile: { userId: isSecondSession(query) ? 2 : 1 } });
+netease.playlist_detail = async query => {
+  playlistDetails++;
+  const firstId = isSecondSession(query) ? 31 : 11;
+  return response({ playlist: {
+    id: 9, name: 'Shared playlist', trackIds: [firstId, firstId + 1].map(id => ({ id })), trackCount: 2,
+  } });
+};
+netease.song_detail = async query => response({
+  songs: query.ids.split(',').reverse().map(id => ({ id, name: `Track ${id}` })),
+});
+netease.register_xeapikey = async () => {
+  keyRequests++;
+  throw new Error('Simulated key registration failure');
+};
+netease.song_url_v1 = async (query) => {
+  playbackRequests.push(query);
+  if (upstreamMode === 'rejected') throw { status: 400, body: { code: -460 } };
+  if (upstreamMode === 'resolved') return { status: 200, body: { code: '460' } };
+  if (upstreamMode === 'preview') {
+    return { status: 200, body: { data: [{ url: 'https://invalid.example/preview', freeTrialInfo: {} }] } };
+  }
+  if (upstreamMode === 'available') {
+    return { status: 200, body: { data: [{ url: mockAudioUrl, code: 200 }] } };
+  }
+  if (upstreamMode === 'failed') throw new Error('Simulated connection failure');
+  if (upstreamMode.startsWith('missing-key')) throw new Error('xeapi public key is missing');
+  return { status: 200, body: { data: [{ url: null }] } };
+};
+netease.song_url = async (query) => {
+  playbackRequests.push(query);
+  if (upstreamMode === 'missing-key-legacy-available') {
+    return { status: 200, body: { data: [{ url: mockAudioUrl, code: 200 }] } };
+  }
+  return { status: 200, body: { data: [{ url: null }] } };
+};
+Date.now = () => originalNow() + nowOffset;
+let playbackServer;
+let mockAudioUrl;
+const playbackFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'radiflow-playback-'));
+try {
+  const audioBytes = Buffer.from([1, 2, 3, 4]);
+  fs.writeFileSync(path.join(playbackFixtureDir, 'fixture.mp3'), audioBytes);
+  const { startServer } = await tsImport('../server.ts', import.meta.url);
+  const started = await startServer({ port: 0, host: '127.0.0.1', mode: 'production', initialMusicDir: playbackFixtureDir });
+  playbackServer = started.server;
+  const stream = (id, options) => fetch(`${started.url}/api/netease/song/stream/${id}?level=exhigh`, options);
+  const check = (id) => fetch(`${started.url}/api/netease/song/stream/${id}?level=exhigh&check=1`);
+
+  const denied = await stream(123);
+  assert.equal(denied.status, 429, 'an upstream -460 should produce a rate-limit response');
+  assert.equal((await denied.json()).code, 'NETEASE_RISK_CONTROL');
+  assert(Number(denied.headers.get('Retry-After')) > 0);
+  assert.equal(playbackRequests.length, 1, 'risk control must stop the lookup immediately');
+  assert.equal(playbackRequests[0].randomCNIP, false, 'playback opts out even when the SDK default is enabled');
+  assert.equal(playbackRequests[0].timeout, 5_000, 'playback lookups pass a timeout to the SDK');
+  assert.equal(playbackRequests[0].unblock, undefined);
+
+  const blocked = await stream(456);
+  assert.equal(blocked.status, 429);
+  await blocked.json();
+  assert.equal(playbackRequests.length, 1, 'cooldown also protects rapid changes to another track');
+
+  nowOffset += 60_000;
+  upstreamMode = 'resolved';
+  const resolvedDenial = await stream(789);
+  assert.equal(resolvedDenial.status, 429, 'recognize a resolved response with a string risk code');
+  await resolvedDenial.json();
+  assert.equal(playbackRequests.length, 2, 'a stream request can reach the upstream again after cooldown');
+
+  nowOffset += 60_000;
+  upstreamMode = 'preview';
+  const preview = await check(789);
+  assert.equal(preview.status, 404, 'a preview is not a full stream');
+  assert.equal((await preview.json()).code, 'NETEASE_PREVIEW_ONLY');
+  assert.equal(playbackRequests.length, 3);
+
+  upstreamMode = 'unavailable';
+  const unavailable = await check(789);
+  assert.equal(unavailable.status, 404);
+  assert.equal((await unavailable.json()).code, 'NETEASE_TRACK_UNAVAILABLE');
+  assert.deepEqual(playbackRequests.slice(3).map(({ level, br }) => level ?? br),
+    ['exhigh', 'higher', 'standard', 320000, 192000, 128000]);
+
+  upstreamMode = 'available';
+  mockAudioUrl = `${started.url}/music/fixture.mp3`;
+  const beforeCheck = playbackRequests.length;
+  assert.equal((await check(789)).status, 204, 'checking a playable track must not proxy its body');
+  const proxied = await stream(789, { headers: { Range: 'bytes=0-1' } });
+  assert.equal(proxied.status, 206);
+  assert.deepEqual(Buffer.from(await proxied.arrayBuffer()), audioBytes.subarray(0, 2));
+  assert.equal(playbackRequests.length, beforeCheck + 1, 'streaming reuses the verified URL');
+
+  upstreamMode = 'failed';
+  const brokenCheck = await check(321);
+  assert.equal(brokenCheck.status, 502);
+  assert.equal((await brokenCheck.json()).code, 'NETEASE_LOOKUP_FAILED');
+
+  upstreamMode = 'missing-key';
+  const uninitialized = await check(321);
+  assert.equal(uninitialized.status, 502);
+  assert.equal((await uninitialized.json()).code, 'NETEASE_SDK_INIT_FAILED');
+  assert.equal(keyRequests, 1, 'library mode initializes only the missing playback key');
+  assert.equal(playbackRequests.at(-1).br, 320000, 'an initialization failure can use the existing legacy lookup');
+
+  upstreamMode = 'missing-key-legacy-available';
+  assert.equal((await check(654)).status, 204, 'a full legacy stream is usable when XEAPI initialization fails');
+
+  const setSession = async cookie => {
+    const result = await fetch(`${started.url}/api/netease/session`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookie }),
+    });
+    assert.equal(result.status, 200);
+    return result.json();
+  };
+  const page = async offset => {
+    const result = await fetch(`${started.url}/api/netease/playlist/9?offset=${offset}&limit=1`);
+    assert.equal(result.status, 200);
+    return result.json();
+  };
+  assert.equal((await setSession('MUSIC_U=test-page-a')).account.userId, 1);
+  const firstPage = await page(0);
+  assert.equal(firstPage.songs[0].filename, 'netease:11');
+  assert.equal(firstPage.nextOffset, 1);
+  assert.equal((await page(1)).songs[0].filename, 'netease:12');
+  assert.equal(playlistDetails, 1, 'later pages reuse the current session’s track IDs');
+  assert.equal((await setSession('MUSIC_U=test-page-b')).account.userId, 2);
+  const secondAccountPage = await page(1);
+  assert.equal(secondAccountPage.songs[0].filename, 'netease:32');
+  assert.equal(secondAccountPage.nextOffset, null);
+  assert.equal(playlistDetails, 2, 'switching sessions invalidates the cached track IDs');
+} finally {
+  Date.now = originalNow;
+  netease.song_url_v1 = originalSongUrl;
+  netease.song_url = originalLegacySongUrl;
+  netease.register_xeapikey = originalRegisterXeapiKey;
+  netease.login_status = originalLoginStatus;
+  netease.playlist_detail = originalPlaylistDetail;
+  netease.song_detail = originalSongDetail;
+  if (playbackServer) await new Promise(resolve => playbackServer.close(resolve));
+  fs.unlinkSync(path.join(playbackFixtureDir, 'fixture.mp3'));
+  fs.rmdirSync(playbackFixtureDir);
+}
+console.log('PASS NetEase playback: risk cooldown, unavailable tracks, previews, and reuse of a checked stream');
+console.log('PASS NetEase playlist pagination: cached order and session isolation');

@@ -5,6 +5,7 @@ import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  const disableHmr = process.env.DISABLE_HMR === 'true';
   return {
     base: mode === 'production' ? './' : '/',
     plugins: [react(), tailwindcss()],
@@ -17,9 +18,9 @@ export default defineConfig(({mode}) => {
       },
     },
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
+      hmr: !disableHmr,
+      // Disabling HMR alone still leaves Vite watching Electron's profile.
+      watch: disableHmr ? null : { ignored: ['**/.electron-preview/**'] },
     },
   };
 });
