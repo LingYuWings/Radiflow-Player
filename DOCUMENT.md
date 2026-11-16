@@ -157,25 +157,25 @@ npx electron-builder --win nsis
 
 ## 4.4 Android 播放器
 
-手机布局采用单列曲库和触控列表。导入入口放在曲库标题栏，播放后底部显示迷你播放条。点击歌曲信息打开全屏播放器，队列在同一屏内切换。系统返回键依次关闭队列、返回曲库，再将应用退到后台。
+Android 应用是原生 Jetpack Compose 界面（`android/app/src/main/java/com/radiflow/player/compose/`，入口 `ComposeActivity`），保留桌面的设计语言：深色毛玻璃卡片（Haze 背景模糊，Android 12 以下退回半透明底）、流光/封面模糊/自定义背景、封面取色作为强调色、迷你播放条和三栏底部导航（网易云 / 本地曲库 / 设置，开屏为网易云，网易云页默认显示歌单）。不再使用 WebView 和 Capacitor。
 
-Android 构建使用 `src/android/` 入口。系统文件选择器通过 Storage Access Framework 提供音频 URI，应用保存 URI 的读取授权和曲目元数据。Media3 `MediaSessionService` 持有播放队列和进度，系统媒体通知可以控制播放。
+播放由 Media3 `MediaSessionService`（`PlaybackService`）负责，界面通过 `MediaController` 的回调接收状态（`PlayerRepository`），不轮询；播放位置按帧从控制器读取。均衡器与 PCM 频谱/波形在 `PlaybackAudioProcessor` 中处理：2048 点滑动窗口约每秒 60 次分析，结果带媒体时间戳存入历史缓冲，界面按当前播放位置取对应帧（解码会提前于实际发声），再逐帧平滑；频谱为 32 段，约 42 dB 显示范围并带高频补偿。进程被结束后，队列与进度从应用私有目录恢复（暂停状态）。
 
-Android 共用桌面的流光、封面配色、歌词滚动和逐字动效、迷你播放器歌词及均衡器曲线算法。手机均衡器使用十条全宽触控滑杆。Media3 同时管理本地与在线队列、后台播放、音量、随机、循环及十段音效，并提供 PCM 频谱和波形。播放会话按暂停状态恢复，本地曲库支持专辑、歌手、本地歌单和收藏。
+本地曲库通过 MediaStore 读取所有存储卷（内部存储和 SD 卡）顶层 `Music` 目录中的音乐，需要 `READ_MEDIA_AUDIO`（Android 12 及以下为 `READ_EXTERNAL_STORAGE`）；首次进入曲库时申请权限，媒体库变化时自动刷新。封面使用 `content://media/external/audio/albumart/<album_id>`；没有专辑标签时系统给出的文件夹名 `Music` 视为未知专辑。其他目录的文件仍可通过“导入音乐”（系统文件选择器，持久读取授权，`AndroidTrackLibrary`）加入。曲库支持歌曲、歌手、专辑、本地歌单和收藏。
 
-网易云搜索、账号、在线歌单和歌词由 APK 内嵌的 Node.js 提供。登录入口在 Android 的设置页，扫码凭据由内嵌服务存入应用私有目录。服务监听随机的本机回环端口，原生请求携带每次启动生成的令牌。Media3 在读取在线音频前复用桌面播放预检。调试包可从应用私有目录的 `no_backup/radiflow-node/preview-cookie` 读取测试 Cookie。
+全屏播放器包含封面、歌词、队列三个面板。歌词与桌面 `LyricsView` 一致：当前行原文居中并以临界阻尼弹簧跟随（手动滑动后暂停约 2.5 秒）；非当前行 0.4 透明度并模糊 4px，已唱 0.3，相距超过 2 行 0.2 并模糊 7px，当前行放大 1.05；逐字歌词以软边遮罩从左到右填充并带强调色光晕；翻译只在当前行下方展开；上下边缘渐隐。迷你播放条歌词为整句淡入淡出。封面手势：下滑收起、上滑打开歌词、左右滑切歌；迷你播放条上滑打开播放器、左右滑切歌。
 
-使用 Node.js 24、JDK 21、Android SDK 36 和 NDK `28.2.13676358` 构建调试包。设置 `ANDROID_HOME` 指向 SDK，或用 `ANDROID_NDK_HOME` 指定独立的 NDK 目录。首次构建会下载并校验固定版本的 Node.js Mobile 运行库。Gradle Wrapper 在 `android/` 中，输出为 `android/app/build/outputs/apk/debug/app-debug.apk`。
+网易云搜索、账号、在线歌单和歌词由 APK 内嵌的 Node.js 提供（与桌面共用 `server.ts`），`NetEaseApi` 经本机回环端口和每次启动生成的令牌访问。歌单分页与桌面 `useNetEase.loadPlaylist` 相同：首屏 200 首立即显示，其余按 500 首一页、2 路并发在后台按顺序追加，单页失败重试一次；加载中显示“已加载 x / y”，失败时保留已加载部分并可“继续加载”；已加载的歌单在离开详情页后仍缓存，登录账号变化时清空。从未完成的歌单开头开始播放后，若队列未被编辑、插队或恢复，后续分页自动补进队列。Media3 在读取在线音频前复用桌面播放预检，播放错误弹窗与桌面使用同一套诊断码文案。登录入口在设置页（扫码），凭据由内嵌服务存入应用私有目录。调试包可从应用私有目录的 `no_backup/radiflow-node/preview-cookie` 读取测试 Cookie。
+
+使用 Node.js 24、JDK 21、Android SDK 36 和 NDK `28.2.13676358` 构建。设置 `ANDROID_HOME` 指向 SDK，或用 `ANDROID_NDK_HOME` 指定独立的 NDK 目录。`npm run build:android` 只准备内嵌 Node.js（首次会下载并校验固定版本的 Node.js Mobile 运行库并打包服务端），之后由 Gradle 组装 APK。`profile` 构建类型为不可调试、开启 R8、使用调试签名的包，用于测量真实帧率。
 
 ```powershell
 npm ci
 npm run build:android
 Push-Location android
-.\gradlew.bat :app:assembleDebug
+.\gradlew.bat :app:assembleDebug      # 或 :app:assembleProfile
 Pop-Location
 ```
-
-`npm run dev:android` 可在浏览器预览手机布局，导入和原生播放需要 Android 应用。
 
 ## 5. 目录结构
 

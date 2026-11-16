@@ -7,7 +7,7 @@ export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   const disableHmr = process.env.DISABLE_HMR === 'true';
   return {
-    base: mode === 'production' || mode === 'android' ? './' : '/',
+    base: mode === 'production' ? './' : '/',
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),

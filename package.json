@@ -10,8 +10,7 @@
     "dev": "tsx server.ts",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
     "build:renderer": "vite build",
-    "dev:android": "vite --mode android",
-    "build:android": "node scripts/prepare-android-node.mjs && vite build --mode android --outDir dist-android && cap sync android",
+    "build:android": "node scripts/prepare-android-node.mjs",
     "build:server": "esbuild server.ts --platform=node --target=node20 --format=esm --bundle --outfile=dist-electron/server.js --external:node:* --external:express --external:music-metadata --external:@neteasecloudmusicapienhanced/*",
     "build": "npm run build:renderer && npm run build:server",
     "electron:preview": "node scripts/electron-preview.mjs",
@@ -21,9 +20,6 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@capacitor/android": "8.6.2",
-    "@capacitor/app": "8.1.2",
-    "@capacitor/core": "8.6.2",
     "@fontsource-variable/bricolage-grotesque": "^5.3.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
@@ -48,7 +44,6 @@
     "vite": "^6.2.0"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.6.2",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",

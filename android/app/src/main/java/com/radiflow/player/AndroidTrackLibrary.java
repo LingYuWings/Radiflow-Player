@@ -12,7 +12,6 @@ import android.util.AtomicFile;
 
 import androidx.core.content.FileProvider;
 
-import com.getcapacitor.JSObject;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -76,7 +75,7 @@ final class AndroidTrackLibrary {
     static JSONObject readMetadata(Context context, Uri uri, JSONObject fallback) {
         String id = uri.toString();
         String title = fallback == null ? displayName(context, uri) : fallback.optString("title", "Audio");
-        JSObject result = new JSObject().put("id", id).put("title", title)
+        LibraryJson result = new LibraryJson().put("id", id).put("title", title)
             .put("artist", fallback == null ? "" : fallback.optString("artist"))
             .put(METADATA_VERSION, CURRENT_METADATA_VERSION);
         if (fallback != null) {

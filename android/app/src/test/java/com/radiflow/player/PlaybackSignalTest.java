@@ -51,9 +51,9 @@ public class PlaybackSignalTest {
         float[] levels = spectrum.analyze(samples);
         int strongest = 0;
         for (int i = 1; i < levels.length; i++) if (levels[i] > levels[strongest]) strongest = i;
-        assertEquals(16, levels.length);
-        assertEquals(8, strongest);
+        assertEquals(32, levels.length);
+        assertEquals(16, strongest);
         assertTrue(levels[strongest] > 0.8f);
-        assertTrue(levels[15] < 0.1f);
+        assertTrue(levels[31] < 0.1f);
     }
 }

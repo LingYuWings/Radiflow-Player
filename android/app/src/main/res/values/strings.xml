@@ -1,7 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">RadiFlow Player</string>
-    <string name="title_activity_main">RadiFlow Player</string>
     <string name="package_name">com.radiflow.player</string>
-    <string name="custom_url_scheme">com.radiflow.player</string>
 </resources>

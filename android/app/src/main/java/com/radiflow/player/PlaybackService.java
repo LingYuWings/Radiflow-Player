@@ -49,6 +49,13 @@ public class PlaybackService extends MediaSessionService {
         return id != null && id.matches("netease:[0-9]{1,20}");
     }
 
+    /** Audio indexed by the system media store (the device Music folders read by the native library). */
+    static boolean isMediaStoreAudio(Uri uri) {
+        if (!"content".equals(uri.getScheme()) || !"media".equals(uri.getAuthority())) return false;
+        List<String> path = uri.getPathSegments();
+        return path.size() == 4 && "audio".equals(path.get(1)) && "media".equals(path.get(2)) && path.get(3).matches("[0-9]+");
+    }
+
     static PlaybackFailure playbackFailure(String id) {
         return lastOnlineFailure != null && lastOnlineFailure.id.equals(id) ? lastOnlineFailure : null;
     }
@@ -117,7 +124,7 @@ public class PlaybackService extends MediaSessionService {
                 if (error == null) lastOnlineFailure = null;
             }
         });
-        Intent openPlayer = new Intent(this, MainActivity.class);
+        Intent openPlayer = new Intent(this, ComposeActivity.class);
         PendingIntent activity = PendingIntent.getActivity(this, 0, openPlayer, PendingIntent.FLAG_IMMUTABLE);
         session = new MediaSession.Builder(this, player)
             .setSessionActivity(activity)
@@ -136,7 +143,7 @@ public class PlaybackService extends MediaSessionService {
                         if (isNetEase(item.mediaId)) {
                             uri = new Uri.Builder().scheme(NETEASE_SCHEME).authority("song")
                                 .appendPath(item.mediaId.substring(NETEASE_PREFIX.length())).build();
-                        } else {
+                        } else if (!isMediaStoreAudio(uri)) {
                             if (library == null) library = AndroidTrackLibrary.read(PlaybackService.this);
                             if (!library.containsKey(item.mediaId)) {
                                 return Futures.immediateFailedFuture(new IllegalArgumentException("Unknown audio source."));

@@ -22,8 +22,4 @@ const render = (app: ReactNode) => {
   );
 };
 
-if (import.meta.env.MODE === 'android') {
-  void import('./android/AndroidApp').then(({ AndroidApp }) => render(<AndroidApp />));
-} else {
-  void import('./desktop').then(({ DesktopApp }) => render(<DesktopApp />));
-}
+void import('./desktop').then(({ DesktopApp }) => render(<DesktopApp />));

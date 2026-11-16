@@ -59,12 +59,14 @@ final class PlaybackSignal {
     }
 
     static final class Spectrum {
-        private static final int SPECTRUM_BANDS = 16;
+        private static final int SPECTRUM_BANDS = 32;
         private final double[] real = new double[WINDOW_SIZE];
         private final double[] imaginary = new double[WINDOW_SIZE];
         private final double[] window = new double[WINDOW_SIZE];
         private final int[] reverse = new int[WINDOW_SIZE];
-        private final int[] bands = new int[WINDOW_SIZE / 2];
+        // Inclusive FFT bin range per band; narrow low bands borrow their nearest bin.
+        private final int[] bandStart = new int[SPECTRUM_BANDS];
+        private final int[] bandEnd = new int[SPECTRUM_BANDS];
 
         Spectrum(int sampleRate) {
             int bits = Integer.numberOfTrailingZeros(WINDOW_SIZE);
@@ -74,10 +76,15 @@ final class PlaybackSignal {
             }
             double min = 48;
             double max = Math.min(16000, sampleRate / 2.0);
-            for (int i = 0; i < bands.length; i++) {
-                double frequency = i * (double) sampleRate / WINDOW_SIZE;
-                bands[i] = frequency < min || frequency >= max ? -1
-                    : Math.min(SPECTRUM_BANDS - 1, (int) (SPECTRUM_BANDS * Math.log(frequency / min) / Math.log(max / min)));
+            double binWidth = (double) sampleRate / WINDOW_SIZE;
+            for (int band = 0; band < SPECTRUM_BANDS; band++) {
+                double low = min * Math.pow(max / min, (double) band / SPECTRUM_BANDS);
+                double high = min * Math.pow(max / min, (double) (band + 1) / SPECTRUM_BANDS);
+                int start = (int) Math.ceil(low / binWidth);
+                int end = (int) Math.ceil(high / binWidth) - 1;
+                if (end < start) start = end = (int) Math.round(Math.sqrt(low * high) / binWidth);
+                bandStart[band] = Math.max(1, Math.min(WINDOW_SIZE / 2 - 1, start));
+                bandEnd[band] = Math.max(bandStart[band], Math.min(WINDOW_SIZE / 2 - 1, end));
             }
         }
 
@@ -107,15 +114,16 @@ final class PlaybackSignal {
                 }
             }
             float[] levels = new float[SPECTRUM_BANDS];
-            for (int i = 1; i < bands.length; i++) {
-                int band = bands[i];
-                if (band < 0) continue;
-                float energy = (float) (real[i] * real[i] + imaginary[i] * imaginary[i]);
-                levels[band] = Math.max(levels[band], energy);
-            }
-            for (int i = 0; i < levels.length; i++) {
-                double amplitude = Math.sqrt(levels[i]) * 4 / WINDOW_SIZE;
-                levels[i] = (float) Math.max(0, Math.min(1, (20 * Math.log10(amplitude) + 64) / 64));
+            for (int band = 0; band < SPECTRUM_BANDS; band++) {
+                double energy = 0;
+                for (int i = bandStart[band]; i <= bandEnd[band]; i++) {
+                    energy = Math.max(energy, real[i] * real[i] + imaginary[i] * imaginary[i]);
+                }
+                double amplitude = Math.sqrt(energy) * 4 / WINDOW_SIZE;
+                // ~42 dB of range with a gentle high-frequency tilt, so music fills the bars
+                // instead of crowding the top (−64..0 dB left most bands at 70–90%).
+                double decibels = 20 * Math.log10(amplitude) + 9.0 * band / (SPECTRUM_BANDS - 1);
+                levels[band] = (float) Math.max(0, Math.min(1, (decibels + 46) / 42));
             }
             return levels;
         }

@@ -12,6 +12,11 @@ release/
 coverage/
 *.tsbuildinfo
 
+# Android packages copied for installation
+*.apk
+*.aab
+*.idsig
+
 # Local runtime data and preview caches
 .electron-preview/
 .vite/
@@ -27,11 +32,13 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Environment files
+# Local environment files and NetEase sessions
 .env
 .env.*
 !.env.example
 !.env.sample
+preview-cookie
+netease-session
 
 # Local music library and runtime data
 /music/
